@@ -30,10 +30,14 @@ async def chromium_endpoint(tmp_path):
         "--no-default-browser-check",
         "about:blank",
     ]
-    if sys.platform.startswith("linux") and os.getuid() == 0:
+    # Hosted Linux runners restrict Chromium's user namespaces. This applies only
+    # to the disposable synthetic-test browser, never the user's CDP browser.
+    if sys.platform.startswith("linux") and (
+        os.getuid() == 0 or os.getenv("GITHUB_ACTIONS") == "true"
+    ):
         args.append("--no-sandbox")
     process = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        *args, stdout=asyncio.subprocess.DEVNULL
     )
     try:
         async with asyncio.timeout(30):

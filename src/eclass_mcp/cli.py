@@ -110,7 +110,7 @@ def main(argv=None):
         resource = importlib.resources.files("eclass_mcp").joinpath("SKILL.md")
         if not resource.is_file():  # Editable source checkout; wheels contain the resource.
             resource = Path(__file__).resolve().parents[2] / "skills/cau-eclass/SKILL.md"
-        print(resource.read_text(encoding="utf-8"))
+        print(resource.read_text(encoding="utf-8"), end="")
         return 0
     from .server import main as serve
 
