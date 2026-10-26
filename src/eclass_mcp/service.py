@@ -341,11 +341,14 @@ class EClassService:
             raise EClassError(result.get("reason", "Original video unavailable"))
         with destination.open("rb") as stream:
             prefix = stream.read(32)
-            if len(prefix) < 12 or prefix[4:8] != b"ftyp":
-                destination.unlink(missing_ok=True)
-                raise EClassError("Downloaded original is not an MP4 file")
-            stream.seek(0)
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            valid_mp4 = len(prefix) >= 12 and prefix[4:8] == b"ftyp"
+            if valid_mp4:
+                stream.seek(0)
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if not valid_mp4:
+            # Windows cannot unlink a file while its read handle is still open.
+            destination.unlink(missing_ok=True)
+            raise EClassError("Downloaded original is not an MP4 file")
         return {
             "path": str(destination),
             "bytes": destination.stat().st_size,
