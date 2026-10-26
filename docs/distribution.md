@@ -54,4 +54,6 @@ PyPI 계정 생성·이메일 인증·2FA 설정 후 [Publishing](https://pypi.o
 
 검증 완료된 커밋에 `v0.2.0` 태그를 만든 후 GitHub Actions의 **Publish to PyPI**를 해당 태그로 수동 실행합니다. 워크플로는 버전 일치 검사·테스트·빌드·배포본 검사를 수행하고 `pypi` 환경에서 OIDC Trusted Publishing으로 게시합니다. 일반 push/PR/릴리스 생성만으로 게시하지 않습니다.
 
-PyPI 게시 전에는 `uvx cau-eclass-mcp`로 현재 버전을 설치할 수 있다고 안내하지 않습니다. 최초 게시 후 설치 readback과 PyPI 메타데이터·해시를 확인한 뒤 문서를 갱신합니다. MCP Registry 등록은 PyPI 게시 후 별도 단계입니다.
+2026-10-26에 `0.2.0`을 PyPI에 게시했습니다. PyPI 직접 설치 후 버전·번들 스킬·생성 설정의 실행·doctor 실패 계약을 검증했고, PyPI의 wheel/sdist SHA256과 GitHub Actions 산출물이 일치함을 확인했습니다. 비상업 라이선스 메타데이터도 확인했습니다. MCP Registry는 아직 등록하지 않았습니다.
+
+패키지명과 실행 명령이 다르므로 일회성 실행은 `uvx --from 'cau-eclass-mcp[cdp]==0.2.0' eclass-mcp --version`처럼 사용합니다. 장기 MCP 설정 생성에는 위의 `uv tool install`을 사용하세요.
