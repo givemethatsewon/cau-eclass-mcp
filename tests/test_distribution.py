@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -9,6 +12,18 @@ from eclass_mcp.cdp import CDPTransport, trusted_download, validate_endpoint
 from eclass_mcp.cli import main
 from eclass_mcp.config import create_transport
 from eclass_mcp.transport import EClassError
+
+
+def test_skill_redirected_output_is_utf8():
+    result = subprocess.run(
+        [sys.executable, "-m", "eclass_mcp.cli", "skill"],
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.decode("utf-8").splitlines() == (
+        Path(__file__).resolve().parents[1] / "skills/cau-eclass/SKILL.md"
+    ).read_text(encoding="utf-8").splitlines()
 
 
 @pytest.mark.parametrize(

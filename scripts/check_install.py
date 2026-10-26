@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 def run(args, *, env, cwd):
-    return subprocess.run(args, env=env, cwd=cwd, check=True, text=True, capture_output=True).stdout
+    return subprocess.run(
+        args, env=env, cwd=cwd, check=True, encoding="utf-8", capture_output=True
+    ).stdout
 
 
 def main():
@@ -47,7 +49,7 @@ def main():
             [str(executable), "--cdp-endpoint", "http://127.0.0.1:1", "doctor"],
             env=env,
             cwd=root,
-            text=True,
+            encoding="utf-8",
             capture_output=True,
         )
         assert result.returncode == 1

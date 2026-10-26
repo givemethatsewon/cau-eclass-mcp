@@ -84,6 +84,9 @@ def main(argv=None):
     config.add_argument("--client", choices=("claude", "cursor", "vscode", "codex"), default="claude")
     commands.add_parser("skill", help="Print the bundled agent SKILL.md")
     args = parser.parse_args(argv)
+    if args.command in {"doctor", "config", "skill"} and hasattr(sys.stdout, "reconfigure"):
+        # Redirected Windows output otherwise uses a legacy code page.
+        sys.stdout.reconfigure(encoding="utf-8")
     if args.browser:
         os.environ["ECLASS_BROWSER"] = args.browser
     if args.cdp_endpoint:
