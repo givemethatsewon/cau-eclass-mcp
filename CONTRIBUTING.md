@@ -1,5 +1,7 @@
 # 개발
 
+README·CHANGELOG·CONTRIBUTING·SECURITY 및 `docs/`만 변경한 push/PR은 CI를 건너뜁니다. 코드·설정·배포 스킬(`skills/`) 변경이 포함되면 CI를 실행합니다. 필요하면 Actions에서 수동 실행할 수 있습니다. 태그 push와 PyPI 게시 워크플로의 검증은 유지됩니다.
+
 Python 3.12 이상과 uv를 사용합니다.
 
 ```sh

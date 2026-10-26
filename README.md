@@ -6,7 +6,7 @@
 
 ## 설치
 
-Python 3.12 이상과 [uv](https://docs.astral.sh/uv/getting-started/installation/)가 필요합니다. **0.2.1 초기 배포판**입니다.
+Python 3.12 이상이 필요합니다. [uv](https://docs.astral.sh/uv/getting-started/installation/) 또는 pip으로 설치할 수 있습니다. **0.2.1 초기 배포판**입니다.
 
 ### PyPI로 설치
 
@@ -20,6 +20,27 @@ eclass-mcp --version
 
 Aside만 사용한다면 `uv tool install --python 3.12 cau-eclass-mcp==0.2.1`으로 설치합니다.
 [PyPI](https://pypi.org/project/cau-eclass-mcp/) · [GitHub Releases](https://github.com/givemethatsewon/cau-eclass-mcp/releases)
+
+### uv 없이 pip으로 설치
+
+가상환경을 만든 뒤 설치합니다. `python` 명령이 없다면 macOS/Linux에서는 `python3`, Windows에서는 `py`를 사용하세요.
+
+```sh
+python -m venv .venv
+```
+
+macOS/Linux에서는 `source .venv/bin/activate`, Windows PowerShell에서는 `.venv\Scripts\Activate.ps1`로 활성화합니다.
+
+```sh
+# Chrome·Edge 등 로컬 Chromium CDP 사용
+python -m pip install "cau-eclass-mcp[cdp]==0.2.1"
+
+# 설치 확인과 MCP 설정 생성
+python -m eclass_mcp.cli --version
+python -m eclass_mcp.cli --browser cdp config --client claude
+```
+
+Aside만 사용한다면 `python -m pip install "cau-eclass-mcp==0.2.1"`로 설치하고 `--browser aside`로 설정을 생성합니다. 이하의 `eclass-mcp` 명령은 `python -m eclass_mcp.cli`로 바꿔 실행해도 됩니다. 생성된 MCP 설정은 가상환경의 Python 절대 경로를 사용하므로 해당 가상환경을 삭제하거나 옮기지 마세요.
 
 ### 전달받은 wheel로 설치
 
