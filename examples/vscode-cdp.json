@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "eclass": {
+      "type": "stdio",
+      "command": "/absolute/path/to/eclass-mcp",
+      "args": ["serve"],
+      "env": {
+        "ECLASS_BROWSER": "cdp",
+        "ECLASS_CDP_ENDPOINT": "http://127.0.0.1:9222",
+        "ECLASS_ENABLE_SUBMISSION": "0"
+      }
+    }
+  }
+}

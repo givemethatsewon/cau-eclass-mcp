@@ -2,85 +2,108 @@
 
 중앙대학교 e-Class의 강좌·공지·과제·마감일을 조회하고, 자료·계획서 PDF·영상을 내려받는 로컬 MCP 서버입니다. FastMCP 4.1.4를 사용하며 MCP 클라이언트와 stdio로 통신합니다.
 
-## 브라우저 지원
+## 설치
 
-**현재 구현은 Aside가 필요합니다.** 로그인된 Aside 탭을 재사용하며, 서버에 아이디·비밀번호를 입력하지 않습니다.
+Python 3.12 이상과 [uv](https://docs.astral.sh/uv/getting-started/installation/)가 필요합니다. 현재 버전은 **0.2.0 배포 준비판**이며 PyPI에는 아직 게시하지 않았습니다.
 
-e-Class API 자체가 Aside 전용인 것은 아닙니다. 다만 현재 `AsideTransport`가 Aside의 탭 연결, 브라우저 내 인증 요청, 다운로드 파일 전달 기능을 사용합니다. Chrome·Edge 등 다른 Chromium 브라우저를 사용하려면 이 부분에 CDP 연결과 다운로드 처리를 구현해야 합니다. 현재 CDP 주소나 브라우저 실행 경로를 지정하는 옵션은 없습니다. `ECLASS_ASIDE_BIN`에 Chrome 경로를 넣어 대체할 수 없습니다.
+### 전달받은 wheel로 설치
 
-현재 검증 환경은 macOS의 로컬 Aside입니다. 원격 브라우저나 여러 사용자가 공유하는 서버 구성은 지원하지 않습니다.
-
-## 1. 준비
-
-필요한 항목:
-
-- Python 3.12 이상과 `uv`
-- 설치·실행 중인 Aside와 `aside` CLI
-- stdio MCP를 지원하는 클라이언트
-
-저장소 디렉터리에서 실행합니다.
+저장소 checkout 없이 wheel 파일을 설치할 수 있습니다. 아래 경로는 전달받은 파일 위치로 바꿉니다.
 
 ```sh
-uv --version
+# Chrome·Edge 등 로컬 Chromium CDP 사용
+uv tool install --python 3.12 --from /absolute/path/cau_eclass_mcp-0.2.0-py3-none-any.whl --with 'playwright>=1.60,<2' cau-eclass-mcp
+
+# 설치 확인
+uv tool run eclass-mcp --version
+```
+
+Aside만 사용하는 경우 설치 명령의 `--with 'playwright>=1.60,<2'`를 생략합니다. `eclass-mcp`가 PATH에 없다면 아래 명령에서도 `uv tool run eclass-mcp`를 사용하거나 `uv tool update-shell` 후 터미널을 다시 엽니다.
+
+### 소스에서 실행
+
+```sh
+uv sync --frozen --extra cdp
+uv run eclass-mcp --help
+```
+
+이하의 `eclass-mcp` 명령은 소스 실행 시 `uv run eclass-mcp`로 바꾸면 됩니다. 설치된 Chrome·Edge에 연결만 하므로 `playwright install`로 별도 브라우저를 받을 필요는 없습니다.
+
+## 브라우저 선택과 로그인
+
+| 방식 | 필요한 것 | 선택 |
+|---|---|---|
+| Chromium CDP | 전용 프로필로 remote debugging을 켠 Chrome·Edge 등 | `--browser cdp` |
+| Aside | 실행 중인 로컬 Aside, `aside` CLI | `--browser aside` (기본값) |
+
+### Chromium CDP
+
+[운영체제별 CDP 시작 가이드](docs/cdp.md)에 따라 브라우저를 실행합니다. macOS Chrome 예시:
+
+```sh
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.cau-eclass/chrome-profile" \
+  https://eclass3.cau.ac.kr/
+```
+
+이 전용 프로필에서 직접 로그인하고 **주차학습 (모듈)** 화면을 한 번 연 뒤 탭을 유지합니다. 최초 로그인 이후에는 같은 프로필을 재사용합니다. 평소 프로필의 쿠키를 복사하지 않습니다.
+
+```sh
+eclass-mcp --browser cdp --cdp-endpoint http://127.0.0.1:9222 doctor
+```
+
+### Aside
+
+Aside에서 https://eclass3.cau.ac.kr/ 에 로그인하고 **주차학습 (모듈)** 화면을 한 번 엽니다. 탭과 Aside를 유지합니다.
+
+```sh
 aside --help
-uv sync --frozen
+eclass-mcp --browser aside doctor
 ```
 
-Aside에서 다음을 준비합니다.
+`doctor`는 프로필 조회로 연결·로그인을 검사하고 `ok: true/false`를 출력합니다. 이름·학번·쿠키는 출력하지 않습니다. 실패 시 종료 코드는 1입니다. 로그인 만료 시 선택한 브라우저에서 다시 로그인하세요.
 
-1. https://eclass3.cau.ac.kr/ 에 로그인합니다.
-2. 수강 과목의 **주차학습 (모듈)** 화면을 한 번 열어 LearningX 인증을 준비합니다.
-3. 로그인된 e-Class 탭과 Aside를 열어 둡니다.
+## MCP 클라이언트 연결
 
-서버는 로그인 화면을 대신 작성하지 않습니다. 로그인 만료 시 Aside에서 다시 로그인하세요.
-
-## 2. MCP 클라이언트에 연결
-
-### Codex
-
-저장소 디렉터리에서 다음 명령을 실행합니다. `uv`와 `aside`가 PATH에 있어야 합니다.
+설치 진단이 통과한 브라우저 설정으로 클라이언트 설정을 생성합니다. 이 명령은 설정을 **출력만** 하며 파일을 덮어쓰거나 클라이언트를 변경하지 않습니다.
 
 ```sh
-codex mcp add eclass \
-  --env ECLASS_ENABLE_SUBMISSION=0 \
-  --env "ECLASS_ASIDE_BIN=$(command -v aside)" \
-  -- "$(command -v uv)" --directory "$PWD" run --frozen eclass-mcp
+# Claude Desktop 또는 Cursor 형식
+eclass-mcp --browser cdp --cdp-endpoint http://127.0.0.1:9222 config --client claude
+
+# VS Code 형식
+eclass-mcp --browser cdp config --client vscode
+
+# Codex TOML 형식
+eclass-mcp --browser cdp config --client codex
 ```
 
-이미 `eclass`가 등록되어 있다면 기존 설정을 사용하거나 필요한 경로만 수정하세요. 등록 또는 코드 업데이트 후에는 MCP 연결을 다시 시작합니다. 기존 채팅에서 도구 목록이 갱신되지 않으면 새 세션을 엽니다.
+Aside는 `--browser aside`로 바꾸고 CDP 옵션을 생략합니다. 필요하면 `--download-dir /absolute/path/downloads`도 함께 전달하세요. 공통 옵션은 `doctor`, `config`, `serve` 등의 명령 **앞에** 놓습니다.
 
-### 다른 MCP 클라이언트
+출력을 사용하는 클라이언트의 MCP 설정에 병합한 뒤 연결을 다시 시작합니다. 설정의 Python 경로는 설치 환경의 절대 경로이므로 패키지 설치 위치를 바꾸면 다시 생성하세요. `config`는 실제 제출을 항상 비활성화한 설정을 출력합니다. 형식별 예시는 [examples/](examples/)에 있습니다.
 
-[mcp.example.json](mcp.example.json)을 참고해 클라이언트의 MCP 설정에 추가합니다. `/absolute/path/to/eclass-mcp`는 실제 저장소 절대 경로로 바꾸세요.
-
-```json
-{
-  "mcpServers": {
-    "eclass": {
-      "command": "uv",
-      "args": [
-        "--directory", "/absolute/path/to/eclass-mcp",
-        "run", "--frozen", "eclass-mcp"
-      ],
-      "env": {
-        "ECLASS_ENABLE_SUBMISSION": "0"
-      }
-    }
-  }
-}
-```
-
-GUI 클라이언트가 실행 파일을 찾지 못하면 `command -v uv`의 결과를 `command`에 넣고, `command -v aside`의 결과를 `env.ECLASS_ASIDE_BIN`에 넣으세요. 이 JSON은 파일에 저장하는 것만으로 자동 등록되지 않으며, 사용하는 클라이언트의 설정에 적용해야 합니다.
-
-직접 시작할 수도 있습니다.
+서버만 직접 실행하려면:
 
 ```sh
-uv run --frozen eclass-mcp
+eclass-mcp --browser cdp serve
 ```
 
-이 명령은 웹페이지를 열거나 포트를 제공하지 않습니다. stdio MCP 요청을 기다리는 서버이므로, 일반 사용은 위 클라이언트 연결 방식을 이용하세요.
+기본 명령도 `serve`입니다. 웹 포트를 제공하지 않고 stdio로 MCP 요청을 기다립니다. 사용자 브라우저는 서버 종료 후에도 유지됩니다.
 
-## 3. 연결 확인과 사용
+## 에이전트 스킬 설치 (선택)
+
+스킬은 과목 ID 선택, 마감일 해석, 원본/재생용 영상 구분, 제출 경계를 에이전트에 안내합니다. MCP 설치·브라우저 로그인을 대신하지 않습니다.
+
+```sh
+mkdir -p ~/.agents/skills/cau-eclass
+eclass-mcp skill > ~/.agents/skills/cau-eclass/SKILL.md
+```
+
+이미 같은 스킬이 있다면 덮어쓰기 전에 내용을 확인하세요. 클라이언트가 다른 스킬 디렉터리를 사용하면 경로를 바꿉니다. 저장소의 [SKILL.md](skills/cau-eclass/SKILL.md)를 직접 설치할 수도 있습니다.
+
+## 연결 확인과 사용
 
 연결한 에이전트에게 다음 순서로 요청합니다.
 
@@ -112,7 +135,7 @@ uv run --frozen eclass-mcp
 
 ## 다운로드
 
-기본 저장 위치는 서버 작업 디렉터리의 `downloads/`입니다. 위 설정대로 실행하면 저장소 안에 생성됩니다. 결과에 로컬 절대 경로, 파일 크기, SHA-256이 반환되며 기존 파일을 덮어쓰지 않습니다.
+기본 저장 위치는 사용자 홈의 `~/Downloads/cau-eclass/`입니다. `ECLASS_DOWNLOAD_DIR` 또는 `--download-dir`로 바꿀 수 있습니다. 결과에 로컬 절대 경로, 파일 크기, SHA-256이 반환되며 기존 파일을 덮어쓰지 않습니다.
 
 | 대상 | 사용 방법과 제한 |
 |---|---|
@@ -144,9 +167,11 @@ uv run --frozen eclass-mcp
 
 | 환경 변수 | 기본값 | 용도 |
 |---|---|---|
+| `ECLASS_BROWSER` | `aside` | `aside` 또는 `cdp` 선택 |
+| `ECLASS_CDP_ENDPOINT` | `http://127.0.0.1:9222` | 로컬 Chromium CDP 주소 |
 | `ECLASS_ASIDE_BIN` | `aside` | Aside CLI 경로 |
 | `ECLASS_ASIDE_PROFILE` | Aside 기본 프로필 | 로그인된 Aside 프로필 선택 |
-| `ECLASS_DOWNLOAD_DIR` | 현재 디렉터리의 `downloads` | 다운로드 폴더. 절대 경로 권장 |
+| `ECLASS_DOWNLOAD_DIR` | `~/Downloads/cau-eclass` | 다운로드 폴더. 절대 경로 권장 |
 | `ECLASS_ENABLE_SUBMISSION` | 비활성화 | 정확히 `1`일 때만 실험적 실제 제출 허용 |
 
 환경 변수는 MCP 클라이언트가 서버를 시작할 때 전달해야 합니다. 변경 후에는 연결을 다시 시작하세요. `.env` 파일을 자동으로 읽는 기능은 없습니다. 개인용 `mcp.json`, 다운로드, 세션·인증 파일은 Git에서 제외합니다.
@@ -164,7 +189,8 @@ Canvas 일반 파일 과제만 대상으로 하며 그룹·외부 originality �
 | 증상 | 확인할 항목 |
 |---|---|
 | `uv` 또는 `aside` 실행 실패 | 클라이언트 설정에 실행 파일 절대 경로 지정 |
-| 로그인된 탭을 찾지 못함 | Aside에서 e-Class 로그인 후 탭 유지. 프로필 설정 확인 |
+| 로그인된 탭을 찾지 못함 | 선택한 브라우저에서 e-Class 로그인 후 탭 유지. 프로필 설정 확인 |
+| CDP 연결 실패 | 디버깅 포트와 전용 프로필 확인, `doctor` 재실행 |
 | 로그인·LearningX 요청 실패 | 다시 로그인하고 과목의 주차학습 화면을 연 뒤 재시도 |
 | 새 다운로드 도구가 안 보임 | MCP 재연결 또는 새 세션 시작 |
 | 원본 영상 다운로드 오류 | 서버 HTTP 500일 수 있음. 재생용 파일도 괜찮을 때만 대체 옵션 사용 |
@@ -180,15 +206,16 @@ uv run pytest -q
 uv run ruff check src tests scripts
 ```
 
-실계정 검증 스크립트는 로그인된 Aside가 필요하며 조회·로컬 다운로드·제출 준비/차단 검사를 수행합니다. 실제 과제 제출은 하지 않습니다. **과목·자료 ID가 특정 검증 계정 기준으로 작성되어 있으므로 다른 계정에서는 먼저 수정하세요.**
+CDP 연결 테스트는 임시 Chromium 프로필과 synthetic 사이트 응답으로 실행합니다. 실제 계정 테스트와 구분하며, macOS에서 로컬 검증하고 Linux/Windows 빌드는 CI에 구성했습니다. CI 구성 자체를 해당 운영체제 검증 완료로 간주하지 않습니다. 테스트 실행 방법은 [개발 안내](CONTRIBUTING.md)를 참고하세요.
+
+wheel과 소스 배포본 생성:
 
 ```sh
-uv run python scripts/live_smoke.py
-uv run python scripts/live_followup.py
-uv run python scripts/live_documents.py
+uv build --no-sources
+uv run python scripts/check_dist.py
 ```
 
-검증 기록: 자동 테스트 15개 통과, MCP 도구 21개 등록, 계획서 PDF 4페이지·한글 본문 추출, 재생용 MP4 약 95 MB 저장 확인. 원본 영상 endpoint 성공과 실제 과제 제출 성공은 검증되지 않았습니다.
+[배포 절차와 참고 설계](docs/distribution.md)에 패키지 설치, 산출물 제외 규칙, 공개 게시 전 남은 설정을 정리했습니다. 실제 과제 제출은 검증하지 않았고, 원본 영상 서버의 HTTP 500 제한은 남아 있습니다.
 
 - [실제 검증 결과와 제한](docs/verification.md)
 - [구조와 FastMCP 선택 근거](docs/architecture.md)

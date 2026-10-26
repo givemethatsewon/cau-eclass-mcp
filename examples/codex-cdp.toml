@@ -1,0 +1,8 @@
+[mcp_servers.eclass]
+command = "/absolute/path/to/eclass-mcp"
+args = ["serve"]
+
+[mcp_servers.eclass.env]
+ECLASS_BROWSER = "cdp"
+ECLASS_CDP_ENDPOINT = "http://127.0.0.1:9222"
+ECLASS_ENABLE_SUBMISSION = "0"

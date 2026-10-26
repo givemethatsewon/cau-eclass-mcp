@@ -25,3 +25,11 @@ FastMCP는 대학 인증이나 파일 전송을 대신 구현해주지 않는다
 일반 API 조회는 알려진 상대경로만 허용하며, 페이지네이션에서 타 origin으로 넘어가지 않는다. 파일 전송은 Canvas 파일 endpoint에서 받은 파일만 저장한다. 인증값은 tool 응답에서 제거하고 파일명은 정규화한다. 과제 제출은 opt-in과 준비 계획이 모두 필요하고 직렬화한다. 실 변경 후 오류가 나면 계획을 재사용할 수 없게 하며 자동 재시도하지 않는다.
 
 미지원 기능은 반환값과 README에서 명시한다. 특히 메타데이터 content_type=mp4와 실제 영상 다운로드 성공을 구별한다. 실제 제출 코드는 mock 테스트만 통과했으므로 검증 완료로 표시하지 않는다.
+
+## 0.2.0 배포 구조
+
+`cli.py`는 설치 진단·설정 출력·스킬 출력과 stdio 서버 시작을 분리한다. `config.py`가 `ECLASS_BROWSER`에 따라 Aside 또는 `CDPTransport`를 선택한다. `browser_scripts.py`의 Canvas/LearningX 요청·영상 메타데이터·제출 스크립트를 두 어댑터가 공유한다.
+
+CDP는 optional `cdp` extra의 Playwright Python 연결 API를 사용한다. 브라우저 시작/종료를 소유하지 않고 기존 로컬 디버깅 세션에 붙는다. 다운로드는 HTTP 스트리밍으로 크기를 제한하며 리다이렉트마다 목적지·쿠키 범위를 검사한다. CDP 모드에서 쿠키는 다운로드 클라이언트 메모리로 전달되므로, 과거 Aside 구현에만 해당했던 '브라우저 내부에서만 처리' 설명과 구분한다. 파일이나 MCP 응답으로 내보내지 않는다.
+
+개발 checkout과 설치된 wheel 모두 같은 CLI를 제공한다. 스킬 원본은 `skills/cau-eclass/SKILL.md` 하나로 유지하고 wheel 빌드 시 패키지 리소스에 포함한다. 공개 게시 준비 상태와 참고 근거는 [배포 문서](distribution.md)에 기록한다.

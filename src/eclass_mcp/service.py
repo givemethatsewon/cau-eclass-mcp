@@ -88,7 +88,10 @@ def select(obj, *keys):
 class EClassService:
     def __init__(self, transport, output_dir: Path | None = None, enable_submission: bool = False):
         self.transport = transport
-        self.output_dir = (output_dir or Path(os.getenv("ECLASS_DOWNLOAD_DIR", "downloads"))).resolve()
+        default_output = Path.home() / "Downloads" / "cau-eclass"
+        self.output_dir = (
+            output_dir or Path(os.getenv("ECLASS_DOWNLOAD_DIR", str(default_output)))
+        ).resolve()
         self.enable_submission = enable_submission
         self.plans = {}
         self.submission_lock = asyncio.Lock()
@@ -119,6 +122,8 @@ class EClassService:
 
     async def session_status(self):
         user = await self.get("/api/v1/users/self/profile")
+        if not isinstance(user, dict) or not user.get("id"):
+            raise EClassError("No authenticated user profile was returned")
         return {
             "authenticated": True,
             "user": select(user, "id", "name"),

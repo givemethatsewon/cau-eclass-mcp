@@ -9,8 +9,9 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import lifespan
 from pydantic import Field
 
+from .config import create_transport
 from .service import EClassService, clean, iso_now
-from .transport import AsideTransport, EClassError
+from .transport import EClassError
 
 ID = Annotated[int, Field(gt=0)]
 
@@ -21,7 +22,7 @@ def create_server(service=None):
         if service is not None:
             yield {"service": service}
         else:
-            async with AsideTransport() as transport:
+            async with create_transport() as transport:
                 yield {
                     "service": EClassService(
                         transport, enable_submission=os.getenv("ECLASS_ENABLE_SUBMISSION") == "1"
@@ -45,7 +46,7 @@ def create_server(service=None):
 
     @mcp.tool(annotations=read)
     async def get_session_status(ctx: Context) -> dict:
-        """Check existing Aside login and whether submission is enabled."""
+        """Check existing browser login and whether submission is enabled."""
         return await call(ctx, "session_status")
 
     @mcp.tool(annotations=read)
