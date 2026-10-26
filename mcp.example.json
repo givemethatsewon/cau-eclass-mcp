@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "eclass": {
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/eclass-mcp", "run", "--frozen", "eclass-mcp"],
+      "env": {
+        "ECLASS_ENABLE_SUBMISSION": "0"
+      }
+    }
+  }
+}

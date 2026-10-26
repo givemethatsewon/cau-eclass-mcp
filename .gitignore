@@ -1,0 +1,32 @@
+# Browser sessions and downloaded course material are local-only.
+.env
+.env.*
+!.env.example
+.session/
+downloads/
+*.har
+*.cookies
+storage-state*.json
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+test-results/
+*.egg-info/
+
+# Machine-specific MCP configuration; commit the example instead.
+/mcp.json
+/.DS_Store
+/build/
+/dist/
+
+# Downloaded third-party bundles and local reverse-engineering evidence.
+/analysis/public/
+/analysis/learningx-public/
+/analysis/public-rea-summary.json
+
+# Local authentication artifacts.
+/.credentials/
+/.secrets/
+*.pem
+*.key
