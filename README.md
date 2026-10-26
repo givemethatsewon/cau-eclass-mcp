@@ -6,7 +6,20 @@
 
 ## 설치
 
-Python 3.12 이상과 [uv](https://docs.astral.sh/uv/getting-started/installation/)가 필요합니다. 현재 버전은 **0.2.0 배포 준비판**이며 PyPI에는 아직 게시하지 않았습니다.
+Python 3.12 이상과 [uv](https://docs.astral.sh/uv/getting-started/installation/)가 필요합니다. **0.2.0 초기 배포판**입니다.
+
+### PyPI로 설치
+
+```sh
+# Chrome·Edge 등 로컬 Chromium CDP 사용
+uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.2.0'
+
+# 설치 확인
+eclass-mcp --version
+```
+
+Aside만 사용한다면 `uv tool install --python 3.12 cau-eclass-mcp==0.2.0`으로 설치합니다.
+[PyPI](https://pypi.org/project/cau-eclass-mcp/) · [GitHub Releases](https://github.com/givemethatsewon/cau-eclass-mcp/releases)
 
 ### 전달받은 wheel로 설치
 
