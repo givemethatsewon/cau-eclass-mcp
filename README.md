@@ -253,11 +253,10 @@ uv run python scripts/check_dist.py
 
 [배포 절차와 참고 설계](docs/distribution.md)에 패키지 설치, 산출물 제외 규칙, 공개 게시 전 남은 설정을 정리했습니다. 실제 과제 제출은 검증하지 않았고, 원본 영상 서버의 HTTP 500 제한은 남아 있습니다.
 
-- [실제 검증 결과와 제한](docs/verification.md)
 - [구조와 FastMCP 선택 근거](docs/architecture.md)
-- [인증·기능 분석 기록](analysis/authenticated-findings.md)
+- [연동 계약과 유지보수](docs/integration.md)
 
-`analysis/`는 구현 전 조사 기록입니다. 현재 지원 범위는 이 README와 검증 기록을 기준으로 확인하세요. 분석 원본 JS·HTML은 Git에 포함하지 않아 새 checkout에는 없을 수 있습니다.
+공개 문서와 테스트에는 가상 데이터만 사용합니다. 원본 조사 자료·실계정 검증 기록·개인용 조사 스크립트는 로컬에 보관하며 Git 및 배포본에서 제외합니다.
 
 
 ## 라이선스

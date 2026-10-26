@@ -16,4 +16,4 @@ uv run python scripts/check_dist.py
 
 `browser_scripts.py`는 두 어댑터가 공유하는 페이지 내 요청 코드입니다. 서비스의 데이터 해석/제출 계획과 브라우저 연결/파일 전송 로직을 분리하세요. 인증값·서명 URL을 예외, fixture, 로그, PR에 넣지 마세요. 테스트 데이터는 가상 계정·가상 ID를 사용합니다. MCP stdout은 프로토콜 전용입니다.
 
-배포 산출물 검증은 [배포 문서](docs/distribution.md)를 따릅니다. `scripts/live_*.py`는 이전 실계정 조사 도구이며 일반 CI에서 실행하지 않습니다.
+배포 산출물 검증은 [배포 문서](docs/distribution.md)를 따릅니다. 연동 변경은 [연동 계약](docs/integration.md)을 참고하세요. 원본 조사 자료·실계정 응답·개인용 조사 스크립트는 커밋하지 않습니다.

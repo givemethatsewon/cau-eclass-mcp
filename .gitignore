@@ -21,9 +21,11 @@ test-results/
 /dist/
 
 # Downloaded third-party bundles and local reverse-engineering evidence.
-/analysis/public/
-/analysis/learningx-public/
-/analysis/public-rea-summary.json
+/analysis/
+/docs/verification.md
+/scripts/live_*.py
+/scripts/probe_aside.py
+/private/
 
 # Local authentication artifacts.
 /.credentials/
