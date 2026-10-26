@@ -6,19 +6,19 @@
 
 ## 설치
 
-Python 3.12 이상과 [uv](https://docs.astral.sh/uv/getting-started/installation/)가 필요합니다. **0.2.0 초기 배포판**입니다.
+Python 3.12 이상과 [uv](https://docs.astral.sh/uv/getting-started/installation/)가 필요합니다. **0.2.1 초기 배포판**입니다.
 
 ### PyPI로 설치
 
 ```sh
 # Chrome·Edge 등 로컬 Chromium CDP 사용
-uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.2.0'
+uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.2.1'
 
 # 설치 확인
 eclass-mcp --version
 ```
 
-Aside만 사용한다면 `uv tool install --python 3.12 cau-eclass-mcp==0.2.0`으로 설치합니다.
+Aside만 사용한다면 `uv tool install --python 3.12 cau-eclass-mcp==0.2.1`으로 설치합니다.
 [PyPI](https://pypi.org/project/cau-eclass-mcp/) · [GitHub Releases](https://github.com/givemethatsewon/cau-eclass-mcp/releases)
 
 ### 전달받은 wheel로 설치
@@ -27,13 +27,13 @@ Aside만 사용한다면 `uv tool install --python 3.12 cau-eclass-mcp==0.2.0`�
 
 ```sh
 # Chrome·Edge 등 로컬 Chromium CDP 사용
-uv tool install --python 3.12 --from /absolute/path/cau_eclass_mcp-0.2.0-py3-none-any.whl --with 'playwright>=1.60,<2' cau-eclass-mcp
+uv tool install --python 3.12 --from /absolute/path/cau_eclass_mcp-0.2.1-py3-none-any.whl --with 'playwright>=1.60,<2' cau-eclass-mcp
 
 # 설치 확인
-uv tool run eclass-mcp --version
+eclass-mcp --version
 ```
 
-Aside만 사용하는 경우 설치 명령의 `--with 'playwright>=1.60,<2'`를 생략합니다. `eclass-mcp`가 PATH에 없다면 아래 명령에서도 `uv tool run eclass-mcp`를 사용하거나 `uv tool update-shell` 후 터미널을 다시 엽니다.
+Aside만 사용하는 경우 설치 명령의 `--with 'playwright>=1.60,<2'`를 생략합니다. `eclass-mcp`가 PATH에 없다면 `uv tool update-shell`을 실행한 뒤 터미널을 다시 엽니다.
 
 ### 소스에서 실행
 
@@ -195,7 +195,7 @@ eclass-mcp skill > ~/.agents/skills/cau-eclass/SKILL.md
 
 **실제 업로드·제출은 운영 검증되지 않은 실험 기능**입니다. 기본 설정 `ECLASS_ENABLE_SUBMISSION=0`을 유지하세요.
 
-`prepare_submission`은 파일 해시·확장자·과제 잠금·기존 제출을 검사하고 유효기간 10분의 로컬 계획을 만듭니다. 파일을 업로드하지 않습니다. 실제 제출을 명시적으로 요청한 경우에만 설정을 `1`로 바꾸고, 준비 결과의 plan ID와 `SUBMIT <assignment_id>` 확인 문자열로 `submit_assignment`를 호출합니다.
+`prepare_submission`은 파일 해시·확장자·과제 잠금·기존 제출을 검사하고 유효기간 10분의 로컬 계획을 만듭니다. 파일을 업로드하지 않습니다. 실제 제출을 명시적으로 요청한 경우에만 `ECLASS_ENABLE_SUBMISSION=1`로 설정하고 MCP 서버를 재시작합니다. 재시작 후 `prepare_submission`을 다시 실행하고, 파일·과제·준비 결과를 검토한 뒤 새 plan ID와 `SUBMIT <assignment_id>` 확인 문자열로 `submit_assignment`를 호출합니다. 준비 계획은 메모리에만 저장되어 재시작하면 사라집니다. 실제 전송할 파일 바이트의 크기·해시를 검증하며, 검증 후 파일이 바뀌어도 검증된 바이트만 전송합니다.
 
 Canvas 일반 파일 과제만 대상으로 하며 그룹·외부 originality 과제는 차단합니다. 파일당 10 MiB, 전체 20 MiB·10개 이내입니다. 별도 redirect 기반 업로드 완료 절차는 미지원입니다. 불명확한 전송 결과는 자동 재시도하지 않습니다.
 

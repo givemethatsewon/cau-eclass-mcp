@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import ipaddress
-import mimetypes
 import os
 import re
 from contextlib import asynccontextmanager
@@ -260,18 +258,7 @@ class CDPTransport:
             finally:
                 await tab.close()
 
-    async def submit_files(self, plan):
-        payload = {
-            "course": plan["course_id"],
-            "assignment": plan["assignment_id"],
-            "files": [
-                {
-                    "name": f["name"],
-                    "type": mimetypes.guess_type(f["name"])[0] or "application/octet-stream",
-                    "data": base64.b64encode(Path(f["path"]).read_bytes()).decode(),
-                }
-                for f in plan["files"]
-            ],
-        }
+    async def submit_files(self, payload):
+        """Transmit the service's verified byte snapshot without reopening local files."""
         async with self.operation() as page:
             return await page.evaluate(SUBMIT_SCRIPT, payload)

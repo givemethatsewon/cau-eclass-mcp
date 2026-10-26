@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import mimetypes
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -477,15 +479,34 @@ class EClassService:
         )
         if (
             not fresh["ready"]
+            or fresh["files"] != plan["files"]
             or fresh["user_id"] != plan["user_id"]
             or fresh["previous_attempt"] != plan["previous_attempt"]
             or fresh["previous_submitted_at"] != plan["previous_submitted_at"]
         ):
             raise EClassError("Assignment, session, or submission changed; prepare again")
+        # Snapshot and validate the exact bytes sent. Adapters never reopen paths,
+        # so edits during browser connection/upload cannot change approved content.
+        payload = {"course": plan["course_id"], "assignment": plan["assignment_id"], "files": []}
+        for entry in plan["files"]:
+            try:
+                with Path(entry["path"]).open("rb") as source:
+                    content = source.read(10 * 1024 * 1024 + 1)
+            except OSError:
+                raise EClassError("Files changed or became unreadable after preparation") from None
+            if len(content) != entry["size"] or hashlib.sha256(content).hexdigest() != entry["sha256"]:
+                raise EClassError("Files changed after preparation")
+            payload["files"].append(
+                {
+                    "name": entry["name"],
+                    "type": mimetypes.guess_type(entry["name"])[0] or "application/octet-stream",
+                    "data": base64.b64encode(content).decode(),
+                }
+            )
         # No automatic retries once a server write might have happened.
         plan["state"] = "in_flight"
         try:
-            receipt = await self.transport.submit_files(plan)
+            receipt = await self.transport.submit_files(payload)
             stored = await self.submission(plan["course_id"], plan["assignment_id"])
             expected = {str(i) for i in receipt["file_ids"]}
             actual = {str(f["id"]) for f in stored.get("attachments", [])}

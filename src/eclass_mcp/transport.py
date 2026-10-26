@@ -246,23 +246,8 @@ console.log('ECLASS_RESULT:'+JSON.stringify({path:out,bytes:stat.size,content_ty
         )
         return self.collect_file(await self.run(code), destination)
 
-    async def submit_files(self, plan):
-        """Write path. Called only after the service's opt-in and plan checks."""
-        import base64
-        import mimetypes
-
-        payload = {
-            "course": plan["course_id"],
-            "assignment": plan["assignment_id"],
-            "files": [
-                {
-                    "name": f["name"],
-                    "type": mimetypes.guess_type(f["name"])[0] or "application/octet-stream",
-                    "data": base64.b64encode(Path(f["path"]).read_bytes()).decode(),
-                }
-                for f in plan["files"]
-            ],
-        }
+    async def submit_files(self, payload):
+        """Transmit the service's verified byte snapshot without reopening local files."""
         body = (
             """const q="""
             + json.dumps(payload)

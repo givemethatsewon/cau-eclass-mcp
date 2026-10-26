@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -241,3 +242,62 @@ async def test_video_playback_copy_is_labeled(tmp_path):
     result = await EClassService(VideoTransport(), output_dir=tmp_path).download_video(1, 2, True)
     assert result["original"] is False
     assert result["source"] == "commons_playback_mp4"
+
+
+@pytest.mark.parametrize("change_stage", ["during_revalidation", "after_revalidation"])
+async def test_file_changed_during_submission_revalidation_is_not_uploaded(tmp_path, change_stage):
+    source = tmp_path / "work.pdf"
+    source.write_bytes(b"%PDF approved")
+    transport = FakeTransport()
+
+    class ChangingService(EClassService):
+        change = False
+
+        async def prepare(self, *args):
+            if self.change and change_stage == "during_revalidation":
+                source.write_bytes(b"%PDF modified")
+            result = await super().prepare(*args)
+            if self.change and change_stage == "after_revalidation":
+                source.write_bytes(b"%PDF modified")
+            return result
+
+    service = ChangingService(transport, enable_submission=True)
+    plan = await service.prepare(1, 2, [str(source)])
+    service.change = True
+    with pytest.raises(EClassError, match="changed"):
+        await service.submit(plan["plan_id"], "SUBMIT 2")
+    assert transport.writes == 0
+    assert plan["state"] == "prepared"
+
+
+async def test_submission_uses_approved_snapshot_when_file_changes_before_transport_write(tmp_path):
+    source = tmp_path / "work.pdf"
+    approved = b"%PDF approved"
+    source.write_bytes(approved)
+
+    class ChangingTransport(FakeTransport):
+        async def submit_files(self, payload):
+            source.write_bytes(b"%PDF modified")
+            assert base64.b64decode(payload["files"][0]["data"]) == approved
+            assert "path" not in payload["files"][0]
+            return await super().submit_files(payload)
+
+    transport = ChangingTransport()
+    service = EClassService(transport, enable_submission=True)
+    plan = await service.prepare(1, 2, [str(source)])
+    result = await service.submit(plan["plan_id"], "SUBMIT 2")
+    assert result["state"] == "verified" and transport.writes == 1
+
+
+async def test_restarted_service_requires_new_submission_plan(tmp_path):
+    source = tmp_path / "work.pdf"
+    source.write_bytes(b"%PDF approved")
+    transport = FakeTransport()
+    original = EClassService(transport)
+    old = await original.prepare(1, 2, [str(source)])
+    restarted = EClassService(transport, enable_submission=True)
+    with pytest.raises(EClassError, match="ready, unused"):
+        await restarted.submit(old["plan_id"], "SUBMIT 2")
+    assert transport.writes == 0
+    fresh = await restarted.prepare(1, 2, [str(source)])
+    assert fresh["ready"] and fresh["submission_enabled"]
