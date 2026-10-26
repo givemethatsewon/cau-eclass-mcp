@@ -3,6 +3,9 @@ name = "cau-eclass-mcp"
 version = "0.2.0"
 description = "CAU e-Class MCP for authenticated Aside or Chromium CDP sessions"
 readme = "README.md"
+license = "LicenseRef-CAU-EClass-Noncommercial-1.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "givemethatsewon" }]
 keywords = ["mcp", "canvas", "learningx", "cau", "chromium"]
 classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.12", "Topic :: Education"]
 requires-python = ">=3.12"
@@ -11,7 +14,13 @@ dependencies = [
     "beautifulsoup4>=4.12,<5",
     "pypdf>=6,<7",
     "httpx>=0.28,<1",
+    "tzdata>=2025.2",
 ]
+
+[project.urls]
+Repository = "https://github.com/givemethatsewon/cau-eclass-mcp"
+Issues = "https://github.com/givemethatsewon/cau-eclass-mcp/issues"
+Documentation = "https://github.com/givemethatsewon/cau-eclass-mcp#readme"
 
 [project.scripts]
 eclass-mcp = "eclass_mcp.cli:main"
@@ -22,7 +31,7 @@ cdp = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -45,5 +54,5 @@ select = ["E4", "E7", "E9", "F", "I", "B"]
 "skills/cau-eclass/SKILL.md" = "eclass_mcp/SKILL.md"
 
 [tool.hatch.build.targets.sdist]
-include = ["scripts/check_dist.py", "scripts/check_install.py", "src/", "tests/", "skills/", "docs/", "examples/", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "pyproject.toml", "uv.lock", "mcp.example.json"]
+include = ["LICENSE", "NOTICE", "scripts/check_dist.py", "scripts/check_install.py", "src/", "tests/", "skills/", "docs/", "examples/", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "pyproject.toml", "uv.lock", "mcp.example.json"]
 exclude = ["docs/verification.md"]

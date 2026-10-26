@@ -33,10 +33,25 @@ eclass-mcp skill
 
 Aside만 사용할 경우 `--with playwright...`는 생략합니다. 패키지를 다시 설치하거나 위치를 변경했다면 `config` 출력을 다시 생성하세요. 출력되는 Python 경로는 설치된 가상환경의 절대 경로입니다. 임시 `uvx` 환경의 경로를 장기 설정에 넣지 않도록, 설정 생성에는 영구 `uv tool install` 또는 checkout의 `.venv`를 사용하세요.
 
-## 공개 게시 전 남은 설정
+## 게시 설정
 
-현재 Git remote·PyPI 게시 대상·MCP Registry 소유 네임스페이스·배포 라이선스가 정해지지 않았습니다. 로컬 설치 가능한 산출물과 CI까지만 준비하며, 공개 배포나 등록은 수행하지 않습니다. 라이선스가 결정되기 전에는 오픈소스 라이선스가 부여된 것으로 간주하지 마세요.
+- 공개 저장소: `givemethatsewon/cau-eclass-mcp`
+- PyPI 패키지: `cau-eclass-mcp`
+- 요청한 PyPI 계정명: `givemehtatsewon` (GitHub 계정명과 철자가 다름)
+- 라이선스: 프로젝트 전용 `LicenseRef-CAU-EClass-Noncommercial-1.0`. 상업적 사용 금지, 기관 유형에 따른 예외 없음. LICENSE와 NOTICE를 배포본에 포함.
 
-게시 시에는 소유권을 확인한 패키지/저장소 URL을 프로젝트 메타데이터에 추가하고 라이선스를 포함하세요. 그다음 PyPI에 게시한 정확한 버전으로 clean install을 확인하고, 공식 스키마에 맞는 `server.json`을 생성·검증한 뒤 MCP Registry에 등록합니다. PyPI에 아직 게시하지 않은 현재 버전을 `uvx cau-eclass-mcp`로 설치할 수 있다고 안내하지 않습니다.
+PyPI 계정 생성·이메일 인증·2FA 설정 후 [Publishing](https://pypi.org/manage/account/publishing/)에서 pending publisher를 등록합니다.
 
-GitHub Actions는 테스트·빌드 산출물만 생성하며 자동 게시 권한이나 토큰을 요구하지 않습니다.
+| 필드 | 값 |
+|---|---|
+| PyPI Project Name | `cau-eclass-mcp` |
+| Owner | `givemethatsewon` |
+| Repository name | `cau-eclass-mcp` |
+| Workflow name | `release.yml` |
+| Environment name | `pypi` |
+
+계정 username은 패키지의 GitHub Owner 필드가 아닙니다. GitHub Owner는 저장소 소유 계정의 정확한 철자를 사용합니다. API 토큰이나 PyPI 비밀번호를 GitHub Secrets에 저장하지 않습니다.
+
+검증 완료된 커밋에 `v0.2.0` 태그를 만든 후 GitHub Actions의 **Publish to PyPI**를 해당 태그로 수동 실행합니다. 워크플로는 버전 일치 검사·테스트·빌드·배포본 검사를 수행하고 `pypi` 환경에서 OIDC Trusted Publishing으로 게시합니다. 일반 push/PR/릴리스 생성만으로 게시하지 않습니다.
+
+PyPI 게시 전에는 `uvx cau-eclass-mcp`로 현재 버전을 설치할 수 있다고 안내하지 않습니다. 최초 게시 후 설치 readback과 PyPI 메타데이터·해시를 확인한 뒤 문서를 갱신합니다. MCP Registry 등록은 PyPI 게시 후 별도 단계입니다.

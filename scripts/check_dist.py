@@ -25,6 +25,10 @@ if __name__ == "__main__":
             names = archive.namelist()
             check(names)
             assert "eclass_mcp/SKILL.md" in names
+            assert any(name.endswith("/licenses/LICENSE") for name in names)
+            assert any(name.endswith("/licenses/NOTICE") for name in names)
+            metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+            assert "License-Expression: LicenseRef-CAU-EClass-Noncommercial-1.0" in archive.read(metadata_name).decode()
             assert "eclass_mcp/cli.py" in names
             assert "eclass_mcp/cdp.py" in names
     for source in sources:

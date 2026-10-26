@@ -1,5 +1,6 @@
 ---
 name: cau-eclass
+license: LicenseRef-CAU-EClass-Noncommercial-1.0; see repository LICENSE
 description: Use the CAU e-Class MCP to find a user's courses, notices, assignments and deadlines, download materials or syllabus PDFs, and prepare assignment submissions. Applies to Chung-Ang University's eclass3.cau.ac.kr.
 ---
 
