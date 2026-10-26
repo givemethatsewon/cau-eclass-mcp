@@ -55,7 +55,7 @@ async def test_mcp_schema_and_disabled_submission():
     async with Client(create_server(EClassService(t))) as client:
         tools = await client.list_tools()
         names = {x.name for x in tools}
-        assert len(names) == 19
+        assert len(names) == 21
         assert {"get_syllabus", "prepare_submission", "submit_assignment"} <= names
         result = await client.call_tool("list_courses", {})
         assert result.data["result"]["items"][0]["name"] == "Course"
@@ -188,3 +188,56 @@ def test_secure_params_and_signed_urls_are_redacted():
         {"secure_params": "PRIVATE", "url": "https://example.com/file?X-Amz-Credential=PRIVATE&key=PRIVATE"}
     )
     assert "PRIVATE" not in json.dumps(result)
+
+
+async def test_syllabus_pdf_blank_text_is_incomplete(tmp_path):
+    from pypdf import PdfWriter
+
+    class PDFTransport:
+        async def syllabus_pdf(self, course, destination):
+            writer = PdfWriter()
+            writer.add_blank_page(width=100, height=100)
+            writer.write(destination)
+
+    result = await EClassService(PDFTransport(), output_dir=tmp_path).syllabus_document(1)
+    assert result["page_count"] == 1
+    assert result["text_complete"] is False
+    assert result["source"] == "oz_native_export"
+
+
+async def test_syllabus_invalid_pdf_removed(tmp_path):
+    class HTMLTransport:
+        async def syllabus_pdf(self, course, destination):
+            destination.write_bytes(b"<html>Login required</html>")
+
+    with pytest.raises(EClassError, match="validation"):
+        await EClassService(HTMLTransport(), output_dir=tmp_path).syllabus_document(1)
+    assert not list(tmp_path.iterdir())
+
+
+async def test_video_locked_and_invalid_file(tmp_path):
+    class VideoTransport:
+        async def video_original(self, course, item, destination, allow_playback_copy):
+            if item == 1:
+                return {"available": False, "reason": "Video is not open"}
+            destination.write_bytes(b"<html>error</html>")
+            return {"available": True, "source": "commons_original"}
+
+    svc = EClassService(VideoTransport(), output_dir=tmp_path)
+    with pytest.raises(EClassError, match="not open"):
+        await svc.download_video(1, 1)
+    with pytest.raises(EClassError, match="not an MP4"):
+        await svc.download_video(1, 2)
+    assert not list(tmp_path.iterdir())
+
+
+async def test_video_playback_copy_is_labeled(tmp_path):
+    class VideoTransport:
+        async def video_original(self, course, item, destination, allow_playback_copy):
+            assert allow_playback_copy is True
+            destination.write_bytes(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 12)
+            return {"available": True, "source": "commons_playback_mp4"}
+
+    result = await EClassService(VideoTransport(), output_dir=tmp_path).download_video(1, 2, True)
+    assert result["original"] is False
+    assert result["source"] == "commons_playback_mp4"

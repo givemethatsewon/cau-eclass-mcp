@@ -3,7 +3,11 @@ name = "cau-eclass-mcp"
 version = "0.1.0"
 description = "Local CAU Canvas/LearningX MCP server using an existing Aside session"
 requires-python = ">=3.12"
-dependencies = ["fastmcp==4.1.4", "beautifulsoup4>=4.12,<5"]
+dependencies = [
+    "fastmcp==4.1.4",
+    "beautifulsoup4>=4.12,<5",
+    "pypdf>=6,<7",
+]
 
 [project.scripts]
 eclass-mcp = "eclass_mcp.server:main"

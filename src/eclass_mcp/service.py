@@ -225,6 +225,39 @@ class EClassService:
             "warnings": ["External viewer document content is not extracted"] if viewers else [],
         }
 
+    async def syllabus_document(self, course_id, extract_text=True):
+        from pypdf import PdfReader
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        destination = self.output_dir / f"syllabus-{course_id}-{uuid4().hex[:8]}.pdf"
+        await self.transport.syllabus_pdf(course_id, destination)
+        try:
+            if destination.stat().st_size > 64 * 1024 * 1024:
+                raise ValueError("oversize PDF")
+            with destination.open("rb") as stream:
+                if stream.read(5) != b"%PDF-":
+                    raise ValueError("invalid PDF")
+            reader = PdfReader(destination)
+            pages = [page.extract_text() or "" for page in reader.pages] if extract_text else []
+            if not len(reader.pages):
+                raise ValueError("empty PDF")
+            result = {
+                "course_id": course_id,
+                "path": str(destination),
+                "bytes": destination.stat().st_size,
+                "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                "content_type": "application/pdf",
+                "source": "oz_native_export",
+                "page_count": len(reader.pages),
+                "text": "\n\n".join(pages) if extract_text else None,
+                "pages": [{"page": i + 1, "text": value} for i, value in enumerate(pages)],
+                "text_complete": all(value.strip() for value in pages) if extract_text else None,
+            }
+            return result
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise EClassError("Syllabus PDF validation or text extraction failed") from None
+
     async def boards(self, course_id):
         body = await self.get(f"/learningx/api/v1/learningx_board/courses/{course_id}/boards", True)
         return {
@@ -284,12 +317,41 @@ class EClassService:
                             "content_type": media.get("content_type"),
                             "duration": media.get("duration"),
                             "has_view_url": bool((media.get("view_url") or "").strip()),
-                            "download_supported": False,
-                            "reason": "Media URL and download transport are not verified; LTI view GET returns 405",
+                            "download_candidate": bool(
+                                media.get("content_id") not in (None, "", "not_open")
+                                and d.get("opened") is not False
+                                and media.get("content_type") == "mp4"
+                            ),
+                            "reason": "Original availability is checked by download_video_original; not_open items cannot be downloaded",
                             **date_fields(d),
                         }
                     )
         return {"items": videos, "complete": True}
+
+    async def download_video(self, course_id, item_id, allow_playback_copy=False):
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        destination = self.output_dir / f"video-{course_id}-{item_id}-{uuid4().hex[:8]}.mp4"
+        result = await self.transport.video_original(course_id, item_id, destination, allow_playback_copy)
+        if not result.get("available"):
+            raise EClassError(result.get("reason", "Original video unavailable"))
+        with destination.open("rb") as stream:
+            prefix = stream.read(32)
+            if len(prefix) < 12 or prefix[4:8] != b"ftyp":
+                destination.unlink(missing_ok=True)
+                raise EClassError("Downloaded original is not an MP4 file")
+            stream.seek(0)
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        return {
+            "path": str(destination),
+            "bytes": destination.stat().st_size,
+            "sha256": digest,
+            "content_type": "video/mp4",
+            "source": result["source"],
+            "original": result["source"] == "commons_original",
+            "course_id": course_id,
+            "item_id": item_id,
+            "attendance_recorded": False,
+        }
 
     async def download(self, course_id, file_id):
         meta = await self.get(f"/api/v1/courses/{course_id}/files/{file_id}")

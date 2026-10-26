@@ -85,10 +85,22 @@ def create_server(service=None):
         """Combine assignment and LearningX dates; distinguish due/late/unlock/lock in Asia/Seoul."""
         return await call(ctx, "deadlines", course_id)
 
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+    async def download_video_original(
+        course_id: ID, item_id: ID, ctx: Context, allow_playback_copy: bool = False
+    ) -> dict:
+        """Download an accessible Commons original MP4 (up to 1 GiB) locally, without playback or attendance updates. Reject locked/not_open items. If the original endpoint fails, allow_playback_copy explicitly permits the provided playback MP4; the result labels it as non-original."""
+        return await call(ctx, "download_video", course_id, item_id, allow_playback_copy)
+
     @mcp.tool(annotations=read)
     async def get_syllabus(course_id: ID, ctx: Context) -> dict:
         """Get syllabus text and external OZ viewer links. Does not claim to extract OZ PDF contents."""
         return await call(ctx, "syllabus", course_id)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+    async def download_syllabus_pdf(course_id: ID, ctx: Context, extract_text: bool = True) -> dict:
+        """Export the complete syllabus through OZ's native PDF Save option. Save locally and optionally extract page-by-page text without OCR."""
+        return await call(ctx, "syllabus_document", course_id, extract_text)
 
     @mcp.tool(annotations=read)
     async def list_boards(course_id: ID, ctx: Context) -> dict:
