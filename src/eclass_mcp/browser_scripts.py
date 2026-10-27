@@ -18,6 +18,31 @@ catch{body=null;}
 return {status:res.status,body,content_type:res.headers.get('content-type'),link:res.headers.get('link')};
 }"""
 
+COMMONS_PDF_SCRIPT = r"""async(q)=>{
+const m=document.cookie.match('(^|;) ?xn_api_token=([^;]*)(;|$)');if(!m)throw Error('login');
+const headers={Authorization:'Bearer '+m[2]};
+const r=await fetch('/learningx/api/v1/courses/'+q.course+'/modules?include_detail=true',{headers,credentials:'same-origin',redirect:'error'});
+if(!r.ok)throw Error('modules');const modules=await r.json();
+function find(x){if(!x||typeof x!=='object')return null;
+if(String(x.item_id)===String(q.item)&&x.item_content_data)return x;
+for(const v of Object.values(x)){const found=find(v);if(found)return found;}return null;}
+const item=find(modules);
+if(!item||(item.course_id!=null&&String(item.course_id)!==String(q.course)))return {available:false,reason:'PDF item not found in course'};
+const data=item.item_content_data;
+const locked=(x)=>x.opened===false||x.published===false||x.locked===true||x.locked_for_user===true||['locked','not_open','before_open','closed'].includes(x.lecture_period_status);
+if(locked(item)||locked(data)||!data.content_id||data.content_id==='not_open')return {available:false,reason:'PDF is not open to this user'};
+if(item.item_content_type!=='commons'||data.content_type!=='pdf')return {available:false,reason:'Only Commons PDF items are supported'};
+const response=await fetch('/learningx/api/v1/commons/contents?content_id='+encodeURIComponent(data.content_id),{headers,credentials:'same-origin',redirect:'error'});
+if(!response.ok)throw Error('metadata');const meta=(await response.json()).result;
+if(!meta||meta.is_original_file_deleted||String(meta.extension).toLowerCase()!=='pdf')return {available:false,reason:'A native original PDF is unavailable; rendered pages are not synthesized'};
+const trusted=(value)=>{const u=new URL(value);if(u.protocol!=='https:'||!['ocs.cau.ac.kr','cau-cms-object.cdn.gov-ntruss.com'].includes(u.hostname)||u.username||u.password||(u.port&&u.port!=='443'))throw Error('download host');return u.href;};
+const download=meta.download_url?trusted(meta.download_url):null;
+const view=meta.view_url?trusted(meta.view_url):null;
+if(!download&&!view)return {available:false,reason:'A native PDF download was not provided'};
+const size=Number(meta.original_file_length);
+return {available:true,title:item.title,source:'commons_original',original:true,expected_bytes:Number.isSafeInteger(size)&&size>0?size:null,url:download,view_url:view};
+}"""
+
 VIDEO_SCRIPT = r"""async(q)=>{
 const m=document.cookie.match('(^|;) ?xn_api_token=([^;]*)(;|$)');if(!m)throw Error('login');
 const headers={Authorization:'Bearer '+m[2]};

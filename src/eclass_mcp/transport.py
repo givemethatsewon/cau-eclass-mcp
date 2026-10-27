@@ -14,7 +14,7 @@ from uuid import uuid4
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
-from .browser_scripts import READ_SCRIPT, SUBMIT_SCRIPT, VIDEO_SCRIPT
+from .browser_scripts import COMMONS_PDF_SCRIPT, READ_SCRIPT, SUBMIT_SCRIPT, VIDEO_SCRIPT
 
 ORIGIN = "https://eclass3.cau.ac.kr"
 
@@ -147,12 +147,18 @@ console.log('ECLASS_RESULT:'+JSON.stringify({path:out,bytes:size,content_type:ct
         root = (Path.home() / ".aside").resolve()
         if not sources or any(not src.is_relative_to(root) or not src.is_file() for src in sources):
             raise EClassError("Downloads require a local Aside session")
+        created = False
         try:
             with destination.open("xb") as output:
+                created = True
                 os.chmod(destination, 0o600)
                 for src in sources:
                     with src.open("rb") as source:
                         shutil.copyfileobj(source, output)
+        except BaseException:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise
         finally:
             for src in sources:
                 src.unlink(missing_ok=True)
@@ -245,6 +251,61 @@ console.log('ECLASS_RESULT:'+JSON.stringify({path:out,bytes:stat.size,content_ty
 """
         )
         return self.collect_file(await self.run(code), destination)
+
+    async def commons_pdf(
+        self, course_id: int, item_id: int, destination: Path, max_bytes: int = 64 * 1024 * 1024
+    ) -> dict:
+        if max_bytes <= 0:
+            raise EClassError("Download limit must be positive")
+        payload = {"course": course_id, "item": item_id, "limit": max_bytes, "name": uuid4().hex + ".pdf"}
+        code = self.wrap(
+            "const q=" + json.dumps(payload) + ";\n"
+            + "bridgeStage='PDF metadata';const media=await p.evaluate("
+            + COMMONS_PDF_SCRIPT
+            + r""",q);
+const {url,view_url,...info}=media;
+if(!info.available){console.log('ECLASS_RESULT:'+JSON.stringify(info));return;}
+if(info.expected_bytes>q.limit)throw Error('size limit');
+const trusted=(value)=>{const u=new URL(value);if(u.protocol!=='https:'||!['ocs.cau.ac.kr','cau-cms-object.cdn.gov-ntruss.com'].includes(u.hostname)||u.username||u.password||(u.port&&u.port!=='443'))throw Error('download host');return u.href;};
+async function request(value){let target=trusted(value);for(let i=0;i<6;i++){
+const response=await fetch(target,{method:'GET',redirect:'manual'});
+if(response.status>=300&&response.status<400){const location=response.headers.get('location');await response.body?.cancel();if(!location)throw Error('redirect');target=trusted(new URL(location,target).href);continue;}
+if(response.url)trusted(response.url);return response;}throw Error('redirect limit');}
+async function smallText(value){const response=await request(value);if(!response.ok){await response.body?.cancel();throw Error('metadata response');}
+const reader=response.body.getReader();const chunks=[];let size=0;
+try{for(;;){const part=await reader.read();if(part.done)break;size+=part.value.length;if(size>2*1024*1024)throw Error('metadata limit');chunks.push(Buffer.from(part.value));}}finally{await reader.cancel();}
+return Buffer.concat(chunks).toString('utf8');}
+const entities=(text)=>text.replace(/&(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi,value=>{const names={'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'"};if(names[value])return names[value];return String.fromCodePoint(value[2].toLowerCase()==='x'?parseInt(value.slice(3,-1),16):parseInt(value.slice(2,-1),10));});
+bridgeStage='native PDF response';
+let response=url?await request(url):null;
+if(!response||!response.ok||/html|json/i.test(response.headers.get('content-type')||'')){
+await response?.body?.cancel();if(!view_url)throw Error('native endpoint unavailable');
+bridgeStage='PDF viewer metadata';const html=await smallText(view_url);const match=html.match(/var\s+contentUri\s*=\s*['"]([^'"]+)['"]/);if(!match)throw Error('viewer metadata');
+const xml=await smallText(new URL(entities(match[1]),view_url).href);
+const download=xml.match(/<content_download_uri>\s*([\s\S]*?)\s*<\/content_download_uri>/);if(!download)throw Error('native PDF unavailable');
+let value=download[1];if(value.startsWith('<![CDATA[')&&value.endsWith(']]>'))value=value.slice(9,-3);
+bridgeStage='native PDF response';response=await request(new URL(entities(value),view_url).href);
+}
+const ct=(response.headers.get('content-type')||'').toLowerCase();
+if(!response.ok||/html|json/.test(ct)){await response.body?.cancel();throw Error('not a file');}
+if(Number(response.headers.get('content-length')||0)>q.limit){await response.body.cancel();throw Error('size limit');}
+const dir=path.join(pwd,'artifacts');await fs.mkdir(dir,{recursive:true});const out=path.join(dir,q.name);
+const reader=response.body.getReader();const parts=[];let chunks=[];let buffered=0;let size=0;let success=false;
+async function flush(){if(!buffered)return;const part=out+'.'+parts.length;await fs.writeFile(part,Buffer.concat(chunks),{flag:'wx',mode:0o600});parts.push(part);chunks=[];buffered=0;}
+try{for(;;){const part=await reader.read();if(part.done)break;size+=part.value.length;if(size>q.limit)throw Error('size limit');chunks.push(Buffer.from(part.value));buffered+=part.value.length;if(buffered>=8*1024*1024)await flush();}
+await flush();if(!size||(info.expected_bytes&&size!==info.expected_bytes))throw Error('size mismatch');success=true;
+}finally{await reader.cancel();if(!success)for(const part of parts)await fs.unlink(part);}
+console.log('ECLASS_RESULT:'+JSON.stringify({...info,parts,bytes:size,content_type:ct}));
+"""
+        )
+        value = await self.run(code)
+        if value.get("available"):
+            self.collect_file(value, destination)
+        return {
+            key: value[key]
+            for key in ("available", "reason", "title", "source", "original", "expected_bytes", "bytes", "content_type")
+            if key in value
+        }
 
     async def submit_files(self, payload):
         """Transmit the service's verified byte snapshot without reopening local files."""

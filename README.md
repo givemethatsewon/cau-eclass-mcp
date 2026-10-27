@@ -6,19 +6,19 @@
 
 ## 설치
 
-Python 3.12 이상이 필요합니다. [uv](https://docs.astral.sh/uv/getting-started/installation/) 또는 pip으로 설치할 수 있습니다. **0.2.1 초기 배포판**입니다.
+Python 3.12 이상이 필요합니다. [uv](https://docs.astral.sh/uv/getting-started/installation/) 또는 pip으로 **0.3.0**을 설치할 수 있습니다.
 
 ### PyPI로 설치
 
 ```sh
 # Chrome·Edge 등 로컬 Chromium CDP 사용
-uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.2.1'
+uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.3.0'
 
 # 설치 확인
 eclass-mcp --version
 ```
 
-Aside만 사용한다면 `uv tool install --python 3.12 cau-eclass-mcp==0.2.1`으로 설치합니다.
+Aside만 사용한다면 `uv tool install --python 3.12 cau-eclass-mcp==0.3.0`으로 설치합니다.
 [PyPI](https://pypi.org/project/cau-eclass-mcp/) · [GitHub Releases](https://github.com/givemethatsewon/cau-eclass-mcp/releases)
 
 ### uv 없이 pip으로 설치
@@ -33,14 +33,14 @@ macOS/Linux에서는 `source .venv/bin/activate`, Windows PowerShell에서는 `.
 
 ```sh
 # Chrome·Edge 등 로컬 Chromium CDP 사용
-python -m pip install "cau-eclass-mcp[cdp]==0.2.1"
+python -m pip install "cau-eclass-mcp[cdp]==0.3.0"
 
 # 설치 확인과 MCP 설정 생성
 python -m eclass_mcp.cli --version
 python -m eclass_mcp.cli --browser cdp config --client claude
 ```
 
-Aside만 사용한다면 `python -m pip install "cau-eclass-mcp==0.2.1"`로 설치하고 `--browser aside`로 설정을 생성합니다. 이하의 `eclass-mcp` 명령은 `python -m eclass_mcp.cli`로 바꿔 실행해도 됩니다. 생성된 MCP 설정은 가상환경의 Python 절대 경로를 사용하므로 해당 가상환경을 삭제하거나 옮기지 마세요.
+Aside만 사용한다면 `python -m pip install "cau-eclass-mcp==0.3.0"`로 설치하고 `--browser aside`로 설정을 생성합니다. 이하의 `eclass-mcp` 명령은 `python -m eclass_mcp.cli`로 바꿔 실행해도 됩니다. 생성된 MCP 설정은 가상환경의 Python 절대 경로를 사용하므로 해당 가상환경을 삭제하거나 옮기지 마세요.
 
 ### 전달받은 wheel로 설치
 
@@ -48,7 +48,7 @@ Aside만 사용한다면 `python -m pip install "cau-eclass-mcp==0.2.1"`로 설�
 
 ```sh
 # Chrome·Edge 등 로컬 Chromium CDP 사용
-uv tool install --python 3.12 --from /absolute/path/cau_eclass_mcp-0.2.1-py3-none-any.whl --with 'playwright>=1.60,<2' cau-eclass-mcp
+uv tool install --python 3.12 --from /absolute/path/cau_eclass_mcp-0.3.0-py3-none-any.whl --with 'playwright>=1.60,<2' cau-eclass-mcp
 
 # 설치 확인
 eclass-mcp --version
@@ -145,7 +145,18 @@ eclass-mcp skill > ~/.agents/skills/cau-eclass/SKILL.md
 
 > eclass의 로그인 상태를 확인하고, 내 강좌 목록을 보여줘.
 
-`get_session_status`와 `list_courses`로 확인할 수 있습니다. 현재 제공하는 도구는 **21개**입니다. 과목 ID는 강좌 목록에서, 과제·파일·영상 ID는 해당 목록이나 상세 응답에서 선택합니다.
+`get_session_status`와 `list_courses`로 확인할 수 있습니다. 현재 **24개** 도구를 제공합니다. 과목은 `list_courses(query="과목명", term="학기 이름 또는 ID")`로 좁힙니다. 자료는 `list_materials`가 반환한 `resource_id`를 그대로 사용합니다. 과제·영상 ID도 해당 목록이나 상세 응답에서 선택합니다. 실행 중인 MCP는 재연결해야 새 도구와 인자 목록을 읽습니다.
+
+### 강의자료 찾고 읽기
+
+1. `list_courses(query="과목명", term="2026년 2학기")`로 강좌를 찾습니다. 검색은 한글 정규화·대소문자·공백 차이를 처리합니다.
+2. `list_materials(course_id=123, week=9, query="Scheduler", content_type="pdf")`로 자료를 찾습니다. 기본 20개이며 `has_more=true`면 `next_offset`으로 다음 결과를 요청합니다.
+3. 반환된 `resource_id` 하나를 `download_material` 또는 `read_material`에 전달합니다. Commons item ID와 Canvas file ID를 직접 구분하거나 조립할 필요가 없습니다.
+4. `read_material(resource_id="목록에서 받은 값", start_page=1)`은 기본 최대 10페이지·24,000자를 읽습니다. `has_more=true`이면 반환된 `next_page`와 `next_offset`을 각각 `start_page`, `start_offset`으로 전달해 이어 읽습니다. 한 페이지 중간에서 끊겼을 때도 같은 페이지의 남은 본문부터 이어집니다.
+
+`list_learning_items`도 `week`, `query`, `content_type` 필터와 간결한 주차·자료 목록을 기본 제공합니다. 기존 LearningX 중첩 메타데이터가 필요할 때만 `detail=true`를 사용합니다.
+
+PDF 응답은 페이지별 본문, 원본 페이지 수, 빈 본문 페이지, 범위 완전성 및 다음 읽기 위치를 포함합니다. `document_complete`는 **이번 호출에서** 문서 전체 텍스트를 읽었는지를 뜻합니다. 여러 호출로 읽었다면 각 응답의 SHA-256이 같은지 확인하고 범위를 모아 완전성을 확인해야 합니다. OCR은 하지 않으므로 텍스트 레이어가 없는 그림·스캔은 별도 시각 확인이 필요합니다. 자료 전체의 요약본을 원문 대신 반환하지 않습니다.
 
 사용 예시:
 
@@ -161,6 +172,10 @@ eclass-mcp skill > ~/.agents/skills/cau-eclass/SKILL.md
 | 도구 | 인자 예시 |
 |---|---|
 | `list_announcements` | `{"course_id":123,"start_date":"2026-09-01","end_date":"2026-12-31"}` |
+| `list_courses` | `{"query":"과목명","term":"2026년 2학기"}` |
+| `list_materials` | `{"course_id":123,"week":9,"content_type":"pdf","limit":20}` |
+| `download_material` | `{"resource_id":"목록에서 반환된 값"}` |
+| `read_material` | `{"resource_id":"목록에서 반환된 값","start_page":1,"end_page":3}` |
 | `list_deadlines` | `{"course_id":123}` |
 | `download_attachment` | `{"course_id":123,"file_id":456}` |
 | `download_syllabus_pdf` | `{"course_id":123,"extract_text":true}` |
@@ -175,7 +190,9 @@ eclass-mcp skill > ~/.agents/skills/cau-eclass/SKILL.md
 
 | 대상 | 사용 방법과 제한 |
 |---|---|
-| Canvas 첨부 | `download_attachment`: Canvas file ID 사용, 최대 64 MiB. OCS 일반 주차자료와 LearningX 게시판 전용 첨부는 미지원 |
+| 주차 Commons PDF·Canvas 파일 | `list_materials` → `download_material(resource_id)`. 최대 64 MiB, PDF는 실제 파일·페이지 수 검증. Commons는 서버가 제공하는 네이티브 원본 PDF만 지원하며, 변환된 슬라이드를 원본 PDF라고 표시하지 않음 |
+| PDF 본문 | `read_material(resource_id)`: 검증된 PDF를 받아 페이지별 텍스트 추출. 같은 프로세스에서는 자료 개정 정보·현재 권한·로컬 해시를 확인해 기존 다운로드 재사용 |
+| 기존 Canvas 첨부 | `download_attachment`: 기존 Canvas file ID 방식도 유지. LearningX 게시판 전용 첨부는 아직 미지원 |
 | 계획서 | `download_syllabus_pdf`: OZ의 Save → Adobe PDF로 전체 페이지 저장. `extract_text=true`가 기본값이며 페이지별 본문도 반환. `false`는 PDF만 저장. 64 MiB 초과 결과는 거부 |
 | 영상 | `download_video_original`: 접근 가능한 Commons MP4 대상, 최대 1 GiB. `not_open` 영상은 거부 |
 
@@ -191,6 +208,7 @@ eclass-mcp skill > ~/.agents/skills/cau-eclass/SKILL.md
 |---|---|
 | 세션·강좌 | `get_session_status`, `list_courses` |
 | 주차학습 | `list_learning_items` |
+| 통합 자료 | `list_materials`, `download_material`, `read_material` |
 | 공지 | `list_announcements`, `get_announcement` |
 | 과제·마감 | `list_assignments`, `get_assignment`, `list_deadlines`, `get_submission` |
 | 계획서 | `get_syllabus`, `download_syllabus_pdf` |

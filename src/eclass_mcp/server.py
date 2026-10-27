@@ -38,7 +38,9 @@ def create_server(service=None):
     async def call(ctx, method, *args):
         try:
             result = await getattr(ctx.lifespan_context["service"], method)(*args)
-            return {"observed_at": iso_now(), "result": clean(result)}
+            # material_read already scrubs metadata and whole-page text before
+            # chunking. Re-scrubbing URL fragments here invalidates its cursor.
+            return {"observed_at": iso_now(), "result": result if method == "material_read" else clean(result)}
         except EClassError as error:
             raise ToolError(str(error)) from None
 
@@ -50,14 +52,40 @@ def create_server(service=None):
         return await call(ctx, "session_status")
 
     @mcp.tool(annotations=read)
-    async def list_courses(ctx: Context) -> dict:
-        """List accessible courses, following Canvas pagination."""
-        return await call(ctx, "courses")
+    async def list_courses(ctx: Context, query: str | None = None, term: str | None = None) -> dict:
+        """List courses filtered by title/code and term ID/name. Korean whitespace is ignored; Canvas pagination is followed."""
+        return await call(ctx, "courses", query, term)
 
     @mcp.tool(annotations=read)
-    async def list_learning_items(course_id: ID, ctx: Context) -> dict:
-        """Get LearningX weekly modules with materials, assignments and attendance metadata."""
-        return await call(ctx, "modules", course_id)
+    async def list_learning_items(
+        course_id: ID, ctx: Context, week: ID | None = None, query: str | None = None,
+        content_type: str | None = None, detail: bool = False,
+    ) -> dict:
+        """Get compact weekly modules; filter by week, title or type (pdf/mp4). Set detail=true for legacy raw metadata. Material resource_id works with download_material/read_material."""
+        return await call(ctx, "learning_items", course_id, week, query, content_type, detail)
+
+    @mcp.tool(annotations=read)
+    async def list_materials(
+        course_id: ID, ctx: Context, week: ID | None = None, query: str | None = None,
+        content_type: str | None = None, offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> dict:
+        """Find compact Commons/Canvas materials by week, title and type. Follow next_offset; pass returned resource_id unchanged to download_material or read_material. Capability flags are candidates; availability is rechecked on download."""
+        return await call(ctx, "materials", course_id, week, query, content_type, offset, limit)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+    async def download_material(resource_id: str, ctx: Context) -> dict:
+        """Download a listed Commons PDF or Canvas file using its unified resource_id. Returns local path, bytes and SHA-256; PDFs also return page_count. Rechecks course access. Never records attendance."""
+        return await call(ctx, "material_download", resource_id)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+    async def read_material(
+        resource_id: str, ctx: Context, start_page: ID = 1, end_page: ID | None = None,
+        start_offset: Annotated[int, Field(ge=0)] = 0,
+        max_chars: Annotated[int, Field(ge=1, le=100000)] = 24000,
+    ) -> dict:
+        """Read PDF page text (no OCR), downloading/reusing a verified file. Defaults to 10 pages and 24000 chars. Follow next_page/next_offset without skipping a truncated page. Empty text/partial ranges are explicit; document_complete refers to this call only."""
+        return await call(ctx, "material_read", resource_id, start_page, end_page, start_offset, max_chars)
 
     @mcp.tool(annotations=read)
     async def list_announcements(course_id: ID, start_date: date, end_date: date, ctx: Context) -> dict:

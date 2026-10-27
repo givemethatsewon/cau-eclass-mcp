@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
+from .catalog import compact_modules, course_matches, filter_materials, material_catalog, parse_resource_id
+from .documents import MAX_DOCUMENT_BYTES, inspect_pdf, read_pdf
 from .transport import ORIGIN, EClassError, local_path
 
 SECRET = re.compile(
@@ -97,6 +99,8 @@ class EClassService:
         self.enable_submission = enable_submission
         self.plans = {}
         self.submission_lock = asyncio.Lock()
+        self.material_lock = asyncio.Lock()
+        self.material_cache = {}
 
     async def get(self, path, lx=False, html=False):
         return (await self.transport.get(path, learningx=lx, html=html))["body"]
@@ -132,11 +136,15 @@ class EClassService:
             "submission_enabled": self.enable_submission,
         }
 
-    async def courses(self):
+    async def courses(self, query=None, term=None):
         result = await self.paged("/api/v1/courses?include[]=term&per_page=100")
         result["items"] = [
-            select(c, "id", "name", "course_code", "workflow_state", "term") for c in result["items"]
+            select(c, "id", "name", "course_code", "workflow_state", "term")
+            for c in result["items"] if course_matches(c, query, term)
         ]
+        for course in result["items"]:
+            if isinstance(course.get("term"), dict):
+                course["term"] = select(course["term"], "id", "name")
         return result
 
     async def modules(self, course_id):
@@ -144,6 +152,118 @@ class EClassService:
         if not isinstance(modules, list):
             raise EClassError("Unexpected LearningX module response")
         return {"items": modules, "complete": True, "next_cursor": None}
+
+    async def learning_items(self, course_id, week=None, query=None, content_type=None, detail=False):
+        result = await self.modules(course_id)
+        raw = result["items"]
+        if detail:
+            # Retain the legacy provider view, while applying the same filters.
+            selected = []
+            for module in raw:
+                visible = compact_modules(course_id, [module], week, query, content_type)
+                if not visible:
+                    continue
+                module = dict(module)
+                module["module_items"] = [
+                    item for item in module.get("module_items", [])
+                    if any(value["items"] for value in compact_modules(
+                        course_id, [{**module, "module_items": [item]}], week, query, content_type
+                    ))
+                ] if any(value is not None for value in (week, query, content_type)) else module.get("module_items", [])
+                selected.append(module)
+            result["items"] = selected
+        else:
+            result["items"] = compact_modules(course_id, raw, week, query, content_type)
+        result["detail"] = detail
+        return result
+
+    async def materials(self, course_id, week=None, query=None, content_type=None, offset=0, limit=20):
+        if offset < 0 or not 1 <= limit <= 100:
+            raise EClassError("Invalid material list offset or limit")
+        modules = await self.modules(course_id)
+        warnings = []
+        try:
+            files = await self.paged(f"/api/v1/courses/{course_id}/files?per_page=100")
+        except EClassError:
+            files = {"items": [], "complete": False}
+            warnings.append("Canvas file listing unavailable; weekly materials are still included")
+        items = filter_materials(material_catalog(course_id, modules["items"], files["items"]),
+                                 week, query, content_type)
+        next_offset = offset + limit if offset + limit < len(items) else None
+        return {
+            "items": items[offset:offset + limit], "total": len(items),
+            "complete": modules["complete"] and files["complete"] and next_offset is None,
+            "has_more": next_offset is not None, "next_offset": next_offset,
+            "warnings": warnings,
+        }
+
+    async def resolve_material(self, resource_id):
+        source, course_id, source_id = parse_resource_id(resource_id)
+        if source == "canvas":
+            file = await self.get(f"/api/v1/courses/{course_id}/files/{source_id}")
+            if not isinstance(file, dict) or str(file.get("id")) != str(source_id):
+                raise EClassError("Canvas material was not found in the requested course")
+            result = material_catalog(course_id, [], [file])
+            revision = (file.get("updated_at"), file.get("created_at"), file.get("size"))
+        else:
+            modules = await self.modules(course_id)
+            result = [item for item in material_catalog(course_id, modules["items"], [])
+                      if item["resource_id"] == resource_id]
+            revision = None
+        if not result:
+            raise EClassError("Material was not found in this course's current list")
+        material = result[0]
+        if not material["available"]:
+            raise EClassError(material.get("unavailable_reason", "Material is not open"))
+        return material, revision or (material.get("updated_at"), material.get("created_at"))
+
+    async def material_download(self, resource_id):
+        async with self.material_lock:
+            material, revision = await self.resolve_material(resource_id)
+            if not material["download_supported"]:
+                raise EClassError("This material type is not supported by download_material")
+            cached = self.material_cache.get(resource_id)
+            if cached and cached["revision"] == revision:
+                path = Path(cached["result"]["path"])
+                if path.is_file() and not path.is_symlink():
+                    with path.open("rb") as stream:
+                        if hashlib.file_digest(stream, "sha256").hexdigest() == cached["result"]["sha256"]:
+                            return dict(cached["result"])
+            source, course_id, source_id = parse_resource_id(resource_id)
+            destination = None
+            try:
+                if source == "canvas":
+                    result = await self.download(course_id, source_id)
+                    destination = Path(result["path"])
+                    result.update(source="canvas_file", original=True)
+                else:
+                    self.output_dir.mkdir(parents=True, exist_ok=True)
+                    destination = self.output_dir / f"material-{course_id}-{source_id}-{uuid4().hex[:8]}.pdf"
+                    native = await self.transport.commons_pdf(course_id, source_id, destination, MAX_DOCUMENT_BYTES)
+                    if not native.get("available"):
+                        raise EClassError(native.get("reason", "Commons PDF is unavailable"))
+                    result = {"path": str(destination), "source": native["source"],
+                              "original": native.get("original", False)}
+                if material["content_type"] == "pdf":
+                    result.update(inspect_pdf(destination))
+                result.update(resource_id=resource_id, course_id=course_id, title=material["title"],
+                              attendance_recorded=False)
+                self.material_cache[resource_id] = {"revision": revision, "result": dict(result)}
+                return result
+            except Exception:
+                if destination is not None:
+                    destination.unlink(missing_ok=True)
+                raise
+
+    async def material_read(self, resource_id, start_page=1, end_page=None, start_offset=0, max_chars=24000):
+        material, _ = await self.resolve_material(resource_id)
+        if not material["text_supported"]:
+            raise EClassError("Page text reading currently supports PDF materials only")
+        downloaded = await self.material_download(resource_id)
+        # Sanitize whole pages before slicing: a second URL scrub of individual
+        # chunks would corrupt both the text and the returned character offsets.
+        return {**clean(downloaded), **read_pdf(Path(downloaded["path"]), start_page, end_page,
+                                              start_offset, max_chars, sanitize=clean)}
 
     async def announcements(self, course_id, start_date, end_date):
         return await self.paged(

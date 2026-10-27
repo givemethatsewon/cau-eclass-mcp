@@ -25,7 +25,7 @@ uv run python scripts/check_dist.py
 깨끗한 별도 환경에서 다음을 확인하세요.
 
 ```sh
-uv tool install --python 3.12 --from ./dist/cau_eclass_mcp-0.2.0-py3-none-any.whl --with 'playwright>=1.60,<2' cau-eclass-mcp
+uv tool install --python 3.12 --from ./dist/cau_eclass_mcp-0.3.0-py3-none-any.whl --with 'playwright>=1.60,<2' cau-eclass-mcp
 eclass-mcp --version
 eclass-mcp --browser cdp config --client claude
 eclass-mcp skill
@@ -52,8 +52,8 @@ PyPI 계정 생성·이메일 인증·2FA 설정 후 [Publishing](https://pypi.o
 
 계정 username은 패키지의 GitHub Owner 필드가 아닙니다. GitHub Owner는 저장소 소유 계정의 정확한 철자를 사용합니다. API 토큰이나 PyPI 비밀번호를 GitHub Secrets에 저장하지 않습니다.
 
-검증 완료된 커밋에 `v0.2.0` 태그를 만든 후 GitHub Actions의 **Publish to PyPI**를 해당 태그로 수동 실행합니다. 워크플로는 버전 일치 검사·테스트·빌드·배포본 검사를 수행하고 `pypi` 환경에서 OIDC Trusted Publishing으로 게시합니다. 일반 push/PR/릴리스 생성만으로 게시하지 않습니다.
+검증 완료된 커밋에 `v0.3.0` 태그를 만든 후 GitHub Actions의 **Publish to PyPI**를 해당 태그로 수동 실행합니다. 워크플로는 버전 일치 검사·테스트·빌드·배포본 검사를 수행하고 `pypi` 환경에서 OIDC Trusted Publishing으로 게시합니다. 일반 push/PR/릴리스 생성만으로 게시하지 않습니다.
 
 2026-10-26에 `0.2.0`을 PyPI에 게시했습니다. PyPI 직접 설치 후 버전·번들 스킬·생성 설정의 실행·doctor 실패 계약을 검증했고, PyPI의 wheel/sdist SHA256과 GitHub Actions 산출물이 일치함을 확인했습니다. 비상업 라이선스 메타데이터도 확인했습니다. MCP Registry는 아직 등록하지 않았습니다.
 
-패키지명과 실행 명령이 다르므로 일회성 실행은 `uvx --from 'cau-eclass-mcp[cdp]==0.2.0' eclass-mcp --version`처럼 사용합니다. 장기 MCP 설정 생성에는 위의 `uv tool install`을 사용하세요.
+패키지명과 실행 명령이 다르므로 일회성 실행은 `uvx --from 'cau-eclass-mcp[cdp]==0.3.0' eclass-mcp --version`처럼 사용합니다. 장기 MCP 설정 생성에는 위의 `uv tool install`을 사용하세요.

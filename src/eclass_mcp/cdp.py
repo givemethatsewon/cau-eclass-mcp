@@ -7,12 +7,13 @@ import ipaddress
 import os
 import re
 from contextlib import asynccontextmanager
+from html import unescape
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from .browser_scripts import READ_SCRIPT, SUBMIT_SCRIPT, VIDEO_SCRIPT
+from .browser_scripts import COMMONS_PDF_SCRIPT, READ_SCRIPT, SUBMIT_SCRIPT, VIDEO_SCRIPT
 from .transport import ORIGIN, EClassError, local_path
 
 DOWNLOAD_HOSTS = {"eclass3.cau.ac.kr", "ocs.cau.ac.kr", "cau-cms-object.cdn.gov-ntruss.com"}
@@ -219,6 +220,44 @@ class CDPTransport:
             async with self.response(page.context, url) as response:
                 result = await self.save_response(response, destination, limit)
             return {**media, **result, "source": "commons_playback_mp4"}
+
+    async def commons_pdf(
+        self, course_id: int, item_id: int, destination: Path, max_bytes: int = 64 * 1024 * 1024
+    ) -> dict:
+        if max_bytes <= 0:
+            raise EClassError("Download limit must be positive")
+        async with self.operation() as page:
+            media = await page.evaluate(COMMONS_PDF_SCRIPT, {"course": course_id, "item": item_id})
+            url, view_url = media.pop("url", None), media.pop("view_url", None)
+            if not media.get("available"):
+                return media
+            if (media.get("expected_bytes") or 0) > max_bytes:
+                raise EClassError("File exceeds download limit")
+            if url:
+                async with self.response(page.context, url) as response:
+                    content_type = response.headers.get("content-type", "").lower()
+                    if response.is_success and "html" not in content_type and "json" not in content_type:
+                        result = await self.save_response(
+                            response, destination, max_bytes, media.get("expected_bytes")
+                        )
+                        return {**media, **result}
+            if not view_url:
+                raise EClassError("Native PDF download endpoint failed and no viewer metadata was provided")
+            html = await self.small_text(page.context, view_url)
+            match = re.search(r"var\s+contentUri\s*=\s*['\"]([^'\"]+)['\"]", html)
+            if not match:
+                raise EClassError("Native PDF viewer metadata is unsupported")
+            xml = await self.small_text(page.context, urljoin(view_url, unescape(match[1])))
+            match = re.search(r"<content_download_uri>\s*(.*?)\s*</content_download_uri>", xml, re.S)
+            if not match:
+                raise EClassError("Viewer metadata does not provide a native PDF download")
+            value = match[1]
+            if value.startswith("<![CDATA[") and value.endswith("]]>"):
+                value = value[9:-3]
+            url = trusted_download(urljoin(view_url, unescape(value)))
+            async with self.response(page.context, url) as response:
+                result = await self.save_response(response, destination, max_bytes, media.get("expected_bytes"))
+            return {**media, **result}
 
     async def syllabus_pdf(self, course_id: int, destination: Path):
         async with self.operation() as page:

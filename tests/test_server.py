@@ -56,8 +56,8 @@ async def test_mcp_schema_and_disabled_submission():
     async with Client(create_server(EClassService(t))) as client:
         tools = await client.list_tools()
         names = {x.name for x in tools}
-        assert len(names) == 21
-        assert {"get_syllabus", "prepare_submission", "submit_assignment"} <= names
+        assert {"get_syllabus", "prepare_submission", "submit_assignment",
+                "list_materials", "download_material", "read_material"} <= names
         result = await client.call_tool("list_courses", {})
         assert result.data["result"]["items"][0]["name"] == "Course"
         with pytest.raises(Exception, match="disabled"):

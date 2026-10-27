@@ -151,7 +151,9 @@ async def test_real_cdp_read_pdf_and_disconnect(chromium_endpoint, tmp_path):
                 env={"ECLASS_ENABLE_SUBMISSION": "0"},
             )
         ) as client:
-            assert len(await client.list_tools()) == 21
+            assert {"list_materials", "download_material", "read_material"} <= {
+                tool.name for tool in await client.list_tools()
+            }
             result = (await client.call_tool("get_session_status", {})).data["result"]
             assert result["authenticated"] is True
             assert result["submission_enabled"] is False
