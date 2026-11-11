@@ -93,15 +93,23 @@ calls. It does not use a real school account.
 ## Measured locally
 
 Same `scripts/benchmark_server.py` harness, fake saved session, no e-Class
-network calls, Apple M3 Max:
+network calls, Apple M3 Max. `tools/list` includes process startup, MCP
+initialize, and one tool listing; CPU is user+system from `/usr/bin/time -l`.
 
-| Server | Startup to `tools/list` | Idle RSS | Processes |
-|---|---:|---:|---:|
-| Python 0.4.0 | ~0.58 s | ~106–111 MiB | 1 |
-| Rust core | **~0.03 s** | **~9.6 MiB** | 1 |
+| Server | Wall time | CPU time | Max RSS | Idle RSS | Processes |
+|---|---:|---:|---:|---:|---:|
+| Python 0.4.0 | ~0.58–0.63 s | ~0.62 s | ~106 MiB | ~106–111 MiB | 1 |
+| Rust core | **~0.03 s** | **<0.01 s** | **~10.5 MiB** | **~9.6 MiB** | 1 |
 
-These are harness measurements, not real e-Class latency. The Rust binary is
-about 14 MiB in release mode (debug builds are much larger).
+Approximate improvement: **18–21× faster startup**, **~90–91% less memory**,
+and a **14 MiB single release binary**. The Rust server spawns no browser for
+reads/downloads; the Python CDP path required an external Chrome tree (about
+674 MiB / 7 processes in the local test).
+
+These are harness measurements, not real e-Class latency. Network time
+dominates actual tool calls; the startup/memory gains are independent of the
+school API. Actual PDF text extraction can differ from `pypdf` on unusual
+fonts/layouts.
 
 ## Design notes
 
