@@ -1,60 +1,155 @@
-# Go/Rust 이전 검토
+# Rust 전환 검토와 실험 결과
 
-2026-11-12, 0.4.0 기준. 결론부터 말하면 **Go 이전은 충분히 가능**하다. 0.4.0에서 읽기 경로를 HTTP로 분리했기 때문에, 브라우저 의존성은 로그인 세션 수집과 OZ PDF·제출 두 곳만 남는다.
+2026-11-12. 0.4.0의 HTTP 우선 구조를 `rust/`에 실제로 이식해 측정했다.
+결론부터 말하면 **읽기·다운로드 코어는 Rust로 완전히 전환 가능**하고,
+Python이 런타임에 반드시 필요한 로직은 없다. 남은 것은 언어 문제가 아니라
+브라우저 UI에 묶인 OZ PDF 내보내기와 과제 제출이다.
 
-## 설계 배경
+## 실험 결과
 
-읽기 경로는 화면 로딩 대신 HTTP JSON을 사용하고, 로그인 세션과 짧은 TTL 캐시를 재사용한다. 과목 요약은 병렬 조회로 처리한다. 이 구조는 언어에 독립적이어서 Go/Rust로 옮길 때도 같은 데이터 흐름을 유지할 수 있다.
+`rust/`는 별도 Cargo 크레이트다. Python 0.4.0과 같은 `session.json`을 읽고,
+같은 26개 도구에 `get_onboarding_status`를 더한 27개 MCP 도구를 제공한다.
 
-## 현재 구조의 이식성
+| 항목 | Python 0.4.0 | Rust core |
+|---|---:|---:|
+| `tools/list`까지 시작 | 약 0.58초 | **약 0.03초** |
+| 유휴 RSS | 약 106~111 MiB | **약 9.6 MiB** |
+| 프로세스 수 | 1 | 1 |
+| 릴리스 바이너리 | wheel + Python 환경 | **약 14 MiB 단일 실행 파일** |
 
-0.4.0의 읽기 경로는 다음 네 덩어리다.
+같은 `scripts/benchmark_server.py` 하네스, 가짜 세션, 실제 학교 네트워크
+호출 없이 측정한 값이다. 실제 e-Class 지연을 측정한 것이 아니다.
 
-1. `session.py`: CDP `Storage.getCookies` → `.cau.ac.kr` 쿠키 필터 → `0600` JSON.
-2. `http_transport.py`: cookie jar, `xn_api_token` Bearer, 같은 origin GET, Link 페이지네이션, 허용 호스트 다운로드.
-3. `catalog.py` / `documents.py`: 자료 ID·주차·필터, PDF 검증·페이지 텍스트.
-4. `server.py`: 26개 MCP 도구 스키마.
+이식 범위:
 
-1~2는 Go 표준 라이브러리로 거의 1:1 이식된다. 3의 카탈로그 로직은 순수 함수라 포팅하기 쉽고, PDF 텍스트만 라이브러리 선택이 필요하다. 4는 MCP Go SDK를 쓰거나 stdio JSON-RPC를 직접 구현하면 된다.
+- 세션 파일 호환, CDP `Storage.getCookies` 수집, HttpOnly 쿠키
+- HTTP GET·리다이렉트·페이지네이션·TTL 캐시·single-flight
+- 강좌·todo·briefing·주차자료·공지·과제·마감·게시판·그룹
+- Commons PDF/영상, Canvas 파일 다운로드
+- PDF 검증·페이지별 텍스트(`lopdf`), 이어 읽기 offset
+- MCP stdio JSON-RPC 27개 도구
+- `login`, `onboard`, `logout`, `doctor`, `config`, `serve`
 
-## Go를 고른다면
+## Python이 필수인 부분이 있나
 
-| 영역 | 선택 |
+**런타임 코어에는 없다.** 다음은 모두 Rust로 대체됐다.
+
+| 기존 Python | Rust 대체 |
 |---|---|
-| HTTP | `net/http`, `net/http/cookiejar`, `encoding/json` |
-| CDP 쿠키 | `nhooyr.io/websocket` 또는 `github.com/gorilla/websocket` + `Storage.getCookies` |
-| MCP | `github.com/modelcontextprotocol/go-sdk` (안정성 확인 후) 또는 150줄 내외 stdio JSON-RPC |
-| HTML | `golang.org/x/net/html` |
-| PDF 텍스트 | `github.com/ledongthuc/pdf` (기본 텍스트), 필요 시 외부 `pdftotext` fallback |
-| 배포 | `CGO_ENABLED=0 go build`, GoReleaser로 macOS/Linux/Windows 바이너리 |
-| 설정 | 기존 `session.json` 형식 유지 |
+| `pypdf` 페이지 텍스트 | `lopdf` (일반 텍스트 PDF 검증·테스트 완료) |
+| FastMCP 서버 | 작은 stdio JSON-RPC 서버 |
+| `httpx` 전송 | `reqwest` |
+| `asyncio` 병렬 briefing | `tokio` + `buffer_unordered(4)` |
+| 세션/CDP 수집 | `tokio-tungstenite` + `Storage.getCookies` |
+| 카탈로그·필터 | 순수 Rust 모듈 + 단위 테스트 |
 
-예상 규모:
+남은 두 기능은 **Python 언어에 묶인 것이 아니라 브라우저 UI에 묶여 있다.**
 
-- 세션·HTTP·페이지네이션: 400~600줄
-- 카탈로그·필터: 250~350줄
-- MCP 도구 스키마·핸들러: 500~700줄
-- PDF 텍스트: 100~200줄
-- 테스트: 400~600줄
+1. **OZ 계획서 PDF 내보내기**: OZ 뷰어의 Save 대화상자와 브라우저 다운로드
+   이벤트를 조작해야 한다. Rust에서는 `chromiumoxide`/CDP로 포팅할 수 있다.
+2. **과제 준비·제출**: Canvas 업로드 티켓, CSRF, 재제출, 불명확한 결과 처리.
+   Rust에서도 HTTP/CDP로 가능하지만 실계정 검증과 안전 경계가 필요하다.
 
-읽기 도구 전체를 2~4일, OZ/제출을 chromedp로 포팅하면 2~3일 더 걸리는 규모다. 단일 바이너리 기준 런타임 RSS는 Python+httpx보다 작아질 가능성이 높지만, 실제 수치는 빌드 후 측정해야 한다.
+즉, 둘을 Rust CDP로 옮기면 Python을 완전히 제거할 수 있다. 당장 무리하지
+않는다면 Rust 코어 + 작은 브라우저 도우미(Python 또는 별도 바이너리)로
+나누는 것이 안전하다.
 
-## Rust를 고른다면
+## 배포: Rust가 더 단순해질 수 있다
 
-`reqwest` + `tokio` + `serde` + `tower`로 같은 구조를 만들 수 있다. 바이너리 크기와 메모리는 Go보다 더 작아질 수 있지만, 비동기·에러 처리·HTML/PDF 라이브러리 선택과 컴파일 시간이 늘어난다. 이 프로젝트의 병목은 네트워크와 학교 API이므로, 특별한 성능 요구가 없다면 Go가 유지보수 비용 면에서 낫다.
+사용자는 Rust, Python, uv, 가상환경을 설치할 필요가 없다. GitHub Releases의
+사전 빌드 바이너리와 설치 스크립트만 사용한다.
 
-## 이식하지 않는 편이 나은 부분
+```sh
+curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | sh
+eclass-mcp onboard --client claude
+```
 
-- **OZ 계획서 PDF**: OZ 뷰어의 Save 대화상자와 다운로드 이벤트를 조작해야 한다. `chromedp`로 가능하지만 브라우저 런타임이 다시 필요하다. Go 본체에서는 "Python/브라우저 도우미 필요"로 두거나, 별도 `eclass-browser` 바이너리로 분리하는 편이 낫다.
-- **과제 제출**: Canvas 업로드 API는 HTTP로 가능하지만, CSRF·업로드 티켓·재제출·불명확한 결과 처리까지 실계정 검증이 필요하다. 현재도 실험 기능이므로 Go 1차 범위에서 제외하는 것을 권한다.
-- **PDF 텍스트 품질**: Python `pypdf`와 Go 라이브러리의 추출 결과가 다를 수 있다. 중요 문서는 골든 테스트로 비교해야 한다.
+릴리스 매트릭스:
+
+- macOS Apple Silicon / Intel
+- Linux x86_64 / arm64
+- Windows x64
+
+각 아카이브에 SHA-256을 붙인다. **베타 단계에서는 서명·notarization을
+필수로 두지 않는다.** macOS Gatekeeper 경고와 Windows SmartScreen 가능성을
+릴리스 노트에 솔직히 적고, 버전 고정(`ECLASS_VERSION=rust-v0.1.0`)과 체크섬
+검증을 기본으로 한다. Python `uv` 설치는 베타 기간의 fallback으로 유지한다.
+사용자가 늘면 macOS Developer ID 서명·notarization을 먼저 추가하고, 그다음
+Windows Authenticode를 검토한다. Homebrew tap은 선택 사항이다.
+
+업데이트는 beta에서 자동 업데이터를 두지 않고, 새 `ECLASS_VERSION`으로 설치
+스크립트를 다시 실행하는 방식이다. 세션 파일과 다운로드는 설치 디렉터리
+밖이라 보존된다. `.github/workflows/rust-release.yml`과 `rust/install.sh`,
+`rust/install.ps1`에 스켈레톤을 추가했다. Cargo/Go/Rust 툴체인을 사용자에게
+요구하지 않는 경로다.
+
+## Agent 온보딩 설계
+
+e-Class에는 OAuth식 scope 동의가 없다. 온보딩은 **로그인 세션, LearningX
+토큰, 강좌 접근을 확인하고 다음 행동을 안내하는 상태 머신**으로 설계한다.
+
+`eclass-mcp onboard --client claude`:
+
+1. 전용 Chromium 프로필을 열고 사용자가 직접 로그인한다.
+2. `Storage.getCookies`로 세션을 저장한다.
+3. 프로필 API, LearningX 토큰, 강좌 목록을 확인한다.
+4. `schema_version`, `session_state`, `authenticated`, `learningx_token`,
+   `courses_visible`, `ready`, `next_actions`를 JSON으로 출력한다.
+
+`next_actions`는 사람용 문장 하나가 아니라 안정적인 **코드 + 메시지 +
+선택적 명령**이다.
+
+| 코드 | 의미 |
+|---|---|
+| `RUN_ONBOARD` | 저장된 세션 없음 |
+| `SESSION_EXPIRED` | 세션은 있으나 만료/거부됨 |
+| `CHECK_CONNECTION` | 네트워크·프로필 확인 실패 |
+| `OPEN_WEEKLY_LEARNING` | Canvas는 되지만 LearningX 토큰이 없음 |
+| `CHECK_ENROLLMENT` | 강좌 조회 실패 또는 0개 |
+| `CONFIGURE_CLIENT` | 준비 완료, 클라이언트 설정 단계 |
+
+`session_state`는 `missing`, `expired`, `unavailable`, `authenticated`를
+구분한다. 단순히 `authenticated=false`로 뭉개지 않는다. MCP의
+`get_onboarding_status`도 같은 스키마를 반환하며, 쿠키 값·Bearer 토큰·세션
+파일 내용은 절대 포함하지 않는다. 이를 직렬화 테스트로 고정했다.
+
+LearningX 토큰은 `login`/`onboard`가 `/learningx/main` HTTP 요청 후에도
+없으면, CDP로 로그인 브라우저에 `learningx/main` 탭을 열고
+`Storage.getCookies`를 10초간 폴링한 뒤 탭을 닫는다. 자동화가 실패하면
+`OPEN_WEEKLY_LEARNING` 액션으로 남겨 사용자가 **주차학습 (모듈)** 화면을
+한 번 열고 `login --no-launch`를 실행하도록 안내한다.
+
+세션 파일 위치는 macOS `~/Library/Application Support/cau-eclass/session.json`,
+Linux `${XDG_CONFIG_HOME:-~/.config}/cau-eclass/session.json`, Windows
+`%APPDATA%\cau-eclass\session.json`이며 `0600`으로 저장한다. `.cau.ac.kr`
+쿠키만 담고 `logout`으로 삭제한다. OS 보안 저장소는 향후 개선 후보이지만,
+현재는 소유자 전용 파일이 최소 조건이다.
+
+온보딩은 권한을 확대하지 않는다. 기본 범위는 읽기 전용이고, 과제 제출은
+별도 opt-in과 준비 계획이 필요한 실험 기능으로 남긴다.
+
+## Go와 비교
+
+Go도 여전히 가능하지만, Rust 구현이 이미 동작하고 측정까지 끝났으므로
+언어를 다시 바꿀 이유는 크지 않다. Go의 장점은 표준 라이브러리와 단순한
+동시성이고, Rust의 장점은 단일 바이너리 크기·메모리·기존 실험 코드다.
+이 프로젝트의 병목은 학교 API이므로 두 언어의 성능 차이는 사용자 체감에
+거의 영향이 없다. **중요한 결정은 언어가 아니라 배포·서명·온보딩·브라우저
+경계다.**
 
 ## 권장 순서
 
-1. Python 0.4.0을 기준 구현으로 유지하고, 실제 계정으로 HTTP 읽기·다운로드를 검증한다.
-2. Go로 `login`, `doctor`, `get_session_status`, `list_courses`, `get_briefing`, `list_todo`만 먼저 만든다.
-3. `list_materials`/`read_material`/다운로드를 포팅하고 Python과 결과 해시를 비교한다.
-4. OZ·제출은 브라우저 도우미로 남길지, chromedp로 합칠지 결정한다.
-5. Go가 읽기 도구에서 충분히 검증되면 Python 패키지는 레거시/브라우저 도우미로 축소한다.
+1. Rust 읽기/다운로드 코어를 실제 계정으로 검증한다.
+2. `onboard` JSON 스키마를 `schema_version=1`로 고정하고 Rust에서 완성한다.
+   LearningX 탭 자동화 가능 여부를 실제 브라우저에서 확인한다. Python
+   쪽에는 새 기능을 얹지 않고, 마이그레이션 기간이 길어질 때만 얇게 추가한다.
+3. GitHub Releases + SHA-256 + 설치 스크립트로 **베타 배포**한다. 서명은
+   미루고, Python `uv` 경로를 fallback으로 남긴다. 스킬/`AGENTS.md`로
+   에이전트 온보딩 흐름을 검증한다.
+4. 실제 사용자 피드백을 본 뒤 macOS 서명·notarization, 그다음 Windows
+   서명 투자 여부를 결정한다.
+5. OZ PDF를 Rust CDP로 포팅하고, 제출은 실계정 검증 후 별도 단계로 둔다.
+6. Rust가 primary가 되면 Python 패키지는 레거시/브라우저 도우미로 축소한다.
 
-두 개의 완전한 구현을 장기간 유지하는 것은 권하지 않는다. Go를 primary로 삼는다면, Python은 OZ·제출·PDF 검증 같은 브라우저/문서 보조 역할로만 남기는 편이 단순하다.
+두 개의 완전한 구현을 장기간 유지하지 않는다. Rust를 primary로 정하고,
+Python은 OZ·제출·PDF 골든 테스트 같은 보조 역할로만 남기는 편이 단순하다.

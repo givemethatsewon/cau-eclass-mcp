@@ -10,6 +10,20 @@ Use the connected eclass MCP tools. The user signs in through `eclass-mcp login`
 
 Start with `get_session_status` and `list_courses(query=..., term=...)`. Resolve the requested course by name and term; ask when multiple courses remain ambiguous. Obtain resource IDs from lists/details, never from examples or another user's account. For a quick daily or weekly overview, use `get_briefing(days=..., course_limit=...)` or `list_todo`; report `complete=false` and `warnings` instead of implying a full scan.
 
+## First-run onboarding
+
+Prefer `get_onboarding_status` when available. Branch on `next_actions[].code`
+and `session_state`, not on prose:
+
+- `RUN_ONBOARD` / `session_state=missing`: ask the user to run `eclass-mcp onboard --client <client>` or `eclass-mcp login` in a terminal. The browser opens for the user to sign in directly. Never ask for a password, OTP, cookie, or session file contents in chat.
+- `SESSION_EXPIRED` / `session_state=expired`: ask for `eclass-mcp login`; do not reuse the old session.
+- `CHECK_CONNECTION`: ask the user to run `eclass-mcp doctor` and retry.
+- `OPEN_WEEKLY_LEARNING`: `login`/`onboard` usually opens the weekly page automatically. If the action remains, ask the user to open **주차학습 (모듈)** once in the login browser, then run `eclass-mcp login --no-launch`.
+- `CHECK_ENROLLMENT`: courses returned 403 or an empty list; ask the user to verify enrollment/term or sign in again. Do not invent course or resource IDs.
+- `CONFIGURE_CLIENT`: run `eclass-mcp config --client <client>` and tell the user to restart the MCP connection.
+
+After the user confirms a command, re-call `get_onboarding_status` and `list_courses`; do not infer success from the command exiting. Onboarding grants no additional permissions: it verifies the browser session, LearningX token, and visible course list. The agent's default scope is read-only; assignment submission remains a separate explicit opt-in.
+
 - Notices: `list_announcements` needs an explicit start/end date; follow with `get_announcement` for detail.
 - Coursework: use `list_assignments`, `get_assignment`, `get_submission` and `list_deadlines`. Distinguish due dates, late windows and lock dates; use the returned Asia/Seoul time. Report incomplete pagination instead of implying all items were read.
 - Weekly materials: prefer `list_materials(course_id, week=..., query=..., content_type="pdf")`. Follow `next_offset` when `has_more=true`. It returns compact metadata and an opaque `resource_id` which can be passed unchanged to `download_material` or `read_material` for either Commons PDF or Canvas file. Download/text capability flags describe candidates; the download rechecks current course membership, access and native-original availability. Do not assemble IDs or guess resource types.

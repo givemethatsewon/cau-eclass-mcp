@@ -304,9 +304,28 @@ uv run python scripts/check_dist.py
 - [구조와 전송 선택 근거](docs/architecture.md)
 - [개선 전후 UX·성능 측정](docs/benchmarks.md)
 - [연동 계약과 유지보수](docs/integration.md)
-- [Go/Rust 이전 검토](docs/portability.md)
+- [Rust 전환 검토](docs/portability.md)
 
 공개 문서와 테스트에는 가상 데이터만 사용합니다. 원본 조사 자료·실계정 검증 기록·개인용 조사 스크립트는 로컬에 보관하며 Git 및 배포본에서 제외합니다.
+
+## Rust core (experimental)
+
+`rust/` now contains a standalone Rust implementation of the read/download core:
+session/CDP login, HTTP pagination and cache, courses/todo/briefing, materials,
+Commons PDF/video and Canvas downloads, PDF page text, and a minimal MCP stdio
+server. It reads the same `session.json` and measures about **0.03 s startup /
+9.6 MiB idle RSS** in the local harness.
+
+```sh
+cd rust
+cargo run --release -- onboard --client claude
+```
+
+User installation is designed around **GitHub Releases prebuilt binaries**, not
+a Rust/Python/uv install. See [rust/README.md](rust/README.md),
+[rust/RELEASING.md](rust/RELEASING.md), and the updated
+[Rust 전환 검토](docs/portability.md). OZ PDF export and assignment submission
+remain browser-bound; everything else is portable.
 
 ## 라이선스
 
