@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "eclass": {
+      "type": "stdio",
+      "command": "/absolute/path/to/eclass-mcp",
+      "args": ["serve"],
+      "env": {
+        "ECLASS_BROWSER": "http",
+        "ECLASS_ENABLE_SUBMISSION": "0"
+      }
+    }
+  }
+}

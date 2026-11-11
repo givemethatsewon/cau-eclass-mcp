@@ -48,13 +48,26 @@ def create_server(service=None):
 
     @mcp.tool(annotations=read)
     async def get_session_status(ctx: Context) -> dict:
-        """Check existing browser login and whether submission is enabled."""
+        """Check the saved session (HTTP, Aside or CDP), current user and whether submission is enabled."""
         return await call(ctx, "session_status")
 
     @mcp.tool(annotations=read)
     async def list_courses(ctx: Context, query: str | None = None, term: str | None = None) -> dict:
         """List courses filtered by title/code and term ID/name. Korean whitespace is ignored; Canvas pagination is followed."""
         return await call(ctx, "courses", query, term)
+
+    @mcp.tool(annotations=read)
+    async def get_briefing(
+        ctx: Context, days: Annotated[int, Field(ge=1, le=60)] = 14,
+        course_limit: Annotated[int, Field(ge=1, le=30)] = 12,
+    ) -> dict:
+        """One-call overview: courses, upcoming todo deadlines and recent announcements. Uses bounded parallel reads and a short cache."""
+        return await call(ctx, "briefing", days, course_limit)
+
+    @mcp.tool(annotations=read)
+    async def list_todo(ctx: Context) -> dict:
+        """List the current user's Canvas todo items (assignments, quizzes and other due work)."""
+        return await call(ctx, "todo")
 
     @mcp.tool(annotations=read)
     async def list_learning_items(

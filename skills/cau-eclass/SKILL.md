@@ -6,9 +6,9 @@ description: Use the CAU e-Class MCP to find a user's courses, notices, assignme
 
 # CAU e-Class
 
-Use the connected eclass MCP tools. The user must sign in in their chosen Aside or CDP Chromium profile; never ask them to paste a password or cookie into chat. If startup fails, use the installed `eclass-mcp doctor` command with their browser settings. Browser login is separate from installing this skill.
+Use the connected eclass MCP tools. The user signs in through `eclass-mcp login` (HTTP mode) or the legacy Aside/CDP browser adapters; never ask them to paste a password or cookie into chat. If startup fails, use the installed `eclass-mcp doctor` command. Browser login is separate from installing this skill.
 
-Start with `get_session_status` and `list_courses(query=..., term=...)`. Resolve the requested course by name and term; ask when multiple courses remain ambiguous. Obtain resource IDs from lists/details, never from examples or another user's account.
+Start with `get_session_status` and `list_courses(query=..., term=...)`. Resolve the requested course by name and term; ask when multiple courses remain ambiguous. Obtain resource IDs from lists/details, never from examples or another user's account. For a quick daily or weekly overview, use `get_briefing(days=..., course_limit=...)` or `list_todo`; report `complete=false` and `warnings` instead of implying a full scan.
 
 - Notices: `list_announcements` needs an explicit start/end date; follow with `get_announcement` for detail.
 - Coursework: use `list_assignments`, `get_assignment`, `get_submission` and `list_deadlines`. Distinguish due dates, late windows and lock dates; use the returned Asia/Seoul time. Report incomplete pagination instead of implying all items were read.

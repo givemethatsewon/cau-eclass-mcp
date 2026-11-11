@@ -13,18 +13,23 @@
 | 계획서 | Canvas의 뷰어 연결 및 OZ | 네이티브 PDF 내보내기, 페이지별 텍스트 추출, OCR 미지원 |
 | 동영상 | Commons 콘텐츠 | 접근 제한 확인, 원본과 재생용 MP4를 구분, 진도 API 호출 없음 |
 
-경로와 요청 구현은 `src/eclass_mcp/browser_scripts.py`, 응답 해석은 `service.py`를 기준으로 확인합니다. 별도의 원본 응답 덤프를 계약으로 사용하지 않습니다. Canvas API 참고: <https://developerdocs.instructure.com/services/canvas>.
+경로와 요청 구현은 `src/eclass_mcp/http_transport.py`·`session.py`(HTTP 모드)와 `browser_scripts.py`(레거시 Aside/CDP), 응답 해석은 `service.py`를 기준으로 확인합니다. 별도의 원본 응답 덤프를 계약으로 사용하지 않습니다. Canvas API 참고: <https://developerdocs.instructure.com/services/canvas>.
 
 ## 세션과 전송
 
-- 로그인은 사용자 브라우저에서 수행합니다. 서버는 비밀번호를 수집하거나 독립 로그인·자동 세션 갱신을 제공하지 않습니다.
-- Canvas와 LearningX의 인증 방식 차이는 브라우저 요청 계층 내부에서 처리합니다. 인증값과 서명 URL은 도구 응답·로그·설정에 저장하지 않습니다.
+- 로그인은 사용자 브라우저에서 수행합니다. 서버는 비밀번호·OTP를 수집하지 않습니다.
+- 0.4.0의 기본 모드는 `eclass-mcp login`이 저장한 세션으로 HTTP 요청을 보냅니다. 세션 파일은 `.cau.ac.kr` 쿠키만 담고 `0600`으로 저장하며, 서명 URL·본문·비밀번호는 저장하지 않습니다.
+- 캐시는 기본 20초 TTL이며 `ECLASS_CACHE_TTL`로 조정합니다. 쓰기 후에는 서비스가 캐시를 비웁니다.
+- 401 또는 로그인 HTML을 만나면 열려 있는 로그인 브라우저에서 세션을 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`). 브라우저가 없으면 `eclass-mcp login`을 안내합니다.
+- Canvas와 LearningX의 인증 방식 차이는 전송 계층에서 처리합니다. 인증값과 서명 URL은 도구 응답·로그·설정에 저장하지 않습니다.
 - 일반 조회는 같은 origin의 허용된 상대경로를 사용합니다. 파일 다운로드는 호스트 허용 목록과 리다이렉트별 인증 범위를 검사합니다.
-- CDP는 로컬 loopback 연결만 허용하며 사용자 브라우저를 시작하거나 종료하지 않습니다. 다운로드에 필요한 쿠키는 해당 호스트 범위에서 메모리로만 사용합니다.
+- CDP는 로컬 loopback 연결만 허용하며 사용자 브라우저를 임의로 시작하거나 종료하지 않습니다. `ECLASS_BROWSER=aside` 또는 `cdp`는 레거시 어댑터로 유지됩니다.
 
-## 응답과 완전성
+## 요약과 완전성
 
-- 도구 응답은 `observed_at`과 `result`로 구성됩니다. `list_courses`는 과목명/코드 검색과 학기 ID/이름 필터를 제공하며 학기 메타데이터는 ID·이름으로 줄입니다.
+- `get_briefing`은 수강 과목, Canvas todo 마감, 최근 공지를 한 번에 반환합니다. 공지는 최대 4개 과목씩 병렬 조회하고, 일부 실패는 `complete=false`와 `warnings`로 표시합니다.
+- `list_todo`는 `/api/v1/users/self/todo`를 그대로 반환합니다.
+- 도구 응답은 `observed_at`과 `result`로 구성됩니다. `list_courses`는 과목명/코드 검색과 학기 ID/이름 필터를 제공합니다.
 - `list_learning_items`는 필터 가능한 간결한 주차 구조가 기본이고, `detail=true`로 기존 중첩 메타데이터를 읽습니다. 내부 서비스의 원본 모듈 조회는 마감일·영상 조회를 위해 유지합니다.
 - `list_materials`는 Commons 주차자료와 Canvas 파일을 합친 목록입니다. `week`, 제목 `query`, `content_type`을 함께 적용하고 기본 20개·최대 100개를 반환합니다. `next_offset`으로 이어 읽으며, 상위 소스 조회 실패 또는 아직 반환하지 않은 결과가 있으면 `complete=false`입니다. 재사용된 자료 ID는 중복 제거하되 `weeks`에 모든 관측 주차를 남깁니다.
 - 목록은 `complete`와 페이지 정보를 확인합니다. Canvas 목록은 `Link`의 다음 페이지를 추적하고, LearningX 게시판은 요청한 한 페이지의 결과임을 표시합니다.
@@ -46,4 +51,4 @@
 
 `tests/`는 가상 ID·응답·파일을 사용합니다. 실제 Chromium CDP 테스트도 합성 사이트 응답을 사용하므로 실제 대학 계정의 성공을 대신하지 않습니다. CI는 운영체제별 테스트·빌드·새 환경 설치 및 CDP 계약을 검증합니다.
 
-실계정 CDP 전체 흐름, 영상 원본 다운로드 성공, 실제 과제 업로드·제출은 검증 완료로 표시하지 않습니다. 서버 변경에 따라 동작이 달라질 수 있습니다. 문제 보고에는 실제 응답 대신 필요한 필드만 가상 값으로 재현하고, 현재 버전·기대 결과·실제 오류를 기록하세요.
+실계정 HTTP 로그인·전체 읽기 흐름, 실계정 CDP 전체 흐름, 영상 원본 다운로드 성공, 실제 과제 업로드·제출은 검증 완료로 표시하지 않습니다. 서버 변경에 따라 동작이 달라질 수 있습니다. 문제 보고에는 실제 응답 대신 필요한 필드만 가상 값으로 재현하고, 현재 버전·기대 결과·실제 오류를 기록하세요.

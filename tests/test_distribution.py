@@ -11,6 +11,7 @@ import pytest
 from eclass_mcp.cdp import CDPTransport, trusted_download, validate_endpoint
 from eclass_mcp.cli import main
 from eclass_mcp.config import create_transport
+from eclass_mcp.session import Session, save_session
 from eclass_mcp.transport import EClassError
 
 
@@ -52,15 +53,63 @@ def test_cdp_loopback_and_config(monkeypatch, capsys):
     assert Path(config["command"]).is_file()
     assert config["env"]["ECLASS_BROWSER"] == "cdp"
     assert config["env"]["ECLASS_ENABLE_SUBMISSION"] == "0"
-    assert isinstance(create_transport(), CDPTransport)
+    transport = create_transport()
+    assert isinstance(getattr(transport, "inner", transport), CDPTransport)
     main(["config", "--client", "vscode"])
     assert json.loads(capsys.readouterr().out)["servers"]["eclass"]["type"] == "stdio"
 
 
 def test_unknown_transport_fails(monkeypatch):
     monkeypatch.setenv("ECLASS_BROWSER", "typo")
-    with pytest.raises(EClassError, match="aside or cdp"):
+    with pytest.raises(EClassError, match="http, aside or cdp"):
         create_transport()
+
+
+def test_config_prefers_http_when_session_exists(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "session.json"
+    save_session(Session(cookies=[]), path)
+    monkeypatch.setenv("ECLASS_SESSION_FILE", str(path))
+    monkeypatch.delenv("ECLASS_BROWSER", raising=False)
+    assert main(["config", "--client", "claude"]) == 0
+    entry = json.loads(capsys.readouterr().out)["mcpServers"]["eclass"]
+    assert entry["env"]["ECLASS_BROWSER"] == "http"
+
+
+def test_logout_removes_session(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "session.json"
+    save_session(Session(cookies=[]), path)
+    monkeypatch.setenv("ECLASS_SESSION_FILE", str(path))
+    assert main(["logout"]) == 0
+    assert not path.exists()
+    assert json.loads(capsys.readouterr().out)["removed"] is True
+
+
+def test_login_saves_the_detected_session(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "session.json"
+    monkeypatch.setenv("ECLASS_SESSION_FILE", str(path))
+
+    async def fake_login(endpoint, timeout, wait_for_browser):
+        assert endpoint == "http://127.0.0.1:9222"
+        assert wait_for_browser is False
+        return Session(
+            cookies=[{"name": "sid", "value": "synthetic", "domain": ".cau.ac.kr", "path": "/"}],
+            endpoint=endpoint,
+        )
+
+    monkeypatch.setattr("eclass_mcp.cli.login_via_cdp", fake_login)
+    assert main(
+        [
+            "login",
+            "--no-launch",
+            "--cdp-endpoint",
+            "http://127.0.0.1:9222",
+            "--timeout",
+            "1",
+        ]
+    ) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True and path.exists()
+    assert "synthetic" not in json.dumps(result)
 
 
 @pytest.mark.parametrize(

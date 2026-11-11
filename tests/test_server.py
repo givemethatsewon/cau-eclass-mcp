@@ -57,7 +57,8 @@ async def test_mcp_schema_and_disabled_submission():
         tools = await client.list_tools()
         names = {x.name for x in tools}
         assert {"get_syllabus", "prepare_submission", "submit_assignment",
-                "list_materials", "download_material", "read_material"} <= names
+                "list_materials", "download_material", "read_material",
+                "get_briefing", "list_todo"} <= names
         result = await client.call_tool("list_courses", {})
         assert result.data["result"]["items"][0]["name"] == "Course"
         with pytest.raises(Exception, match="disabled"):

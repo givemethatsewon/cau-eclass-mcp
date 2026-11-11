@@ -1,7 +1,7 @@
 [project]
 name = "cau-eclass-mcp"
-version = "0.3.0"
-description = "CAU e-Class MCP for authenticated Aside or Chromium CDP sessions"
+version = "0.4.0"
+description = "CAU e-Class MCP with a one-time browser login and lightweight HTTP reads"
 readme = "README.md"
 license = "LicenseRef-CAU-EClass-Noncommercial-1.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -14,6 +14,7 @@ dependencies = [
     "beautifulsoup4>=4.12,<5",
     "pypdf>=6,<7",
     "httpx>=0.28,<1",
+    "websockets>=14,<18",
     "tzdata>=2025.2",
 ]
 
@@ -54,5 +55,5 @@ select = ["E4", "E7", "E9", "F", "I", "B"]
 "skills/cau-eclass/SKILL.md" = "eclass_mcp/SKILL.md"
 
 [tool.hatch.build.targets.sdist]
-include = ["LICENSE", "NOTICE", "scripts/check_dist.py", "scripts/check_install.py", "src/", "tests/", "skills/", "docs/", "examples/", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "pyproject.toml", "uv.lock", "mcp.example.json"]
+include = ["LICENSE", "NOTICE", "scripts/check_dist.py", "scripts/check_install.py", "scripts/benchmark_server.py", "src/", "tests/", "skills/", "docs/", "examples/", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "pyproject.toml", "uv.lock", "mcp.example.json"]
 exclude = ["docs/verification.md"]

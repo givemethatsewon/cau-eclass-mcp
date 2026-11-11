@@ -14,6 +14,6 @@ uv run python scripts/check_dist.py
 
 실제 CDP 테스트는 `ECLASS_TEST_CHROME`에 Chrome/Chromium 실행 파일 경로를 설정하고 `uv run pytest tests/test_cdp_browser.py -q`로 실행합니다. 테스트는 임시 프로필과 synthetic 사이트 응답을 사용하며 작업이 만든 브라우저만 종료합니다. 실제 계정 테스트는 본인에게 허용된 자료로 실행하고, 과제 제출·업로드·영상 재생·진도 갱신은 검증 명목으로 실행하지 마세요.
 
-`browser_scripts.py`는 두 어댑터가 공유하는 페이지 내 요청 코드입니다. 서비스의 데이터 해석/제출 계획과 브라우저 연결/파일 전송 로직을 분리하세요. 인증값·서명 URL을 예외, fixture, 로그, PR에 넣지 마세요. 테스트 데이터는 가상 계정·가상 ID를 사용합니다. MCP stdout은 프로토콜 전용입니다.
+`session.py`는 `.cau.ac.kr` 쿠키 세션 파일과 CDP 수집·갱신을, `http_transport.py`는 HTTP 조회·다운로드를, `cache.py`는 TTL 캐시와 single-flight를 담당합니다. `browser_scripts.py`는 레거시 Aside/CDP 어댑터의 페이지 내 요청 코드입니다. 서비스의 데이터 해석/제출 계획과 전송 계층을 분리하세요. 인증값·서명 URL을 예외, fixture, 로그, PR에 넣지 마세요. 테스트 데이터는 가상 계정·가상 ID를 사용합니다. 세션 파일을 fixture로 커밋하지 말고 `tmp_path`에 만드세요. MCP stdout은 프로토콜 전용입니다.
 
 배포 산출물 검증은 [배포 문서](docs/distribution.md)를 따릅니다. 연동 변경은 [연동 계약](docs/integration.md)을 참고하세요. 원본 조사 자료·실계정 응답·개인용 조사 스크립트는 커밋하지 않습니다.

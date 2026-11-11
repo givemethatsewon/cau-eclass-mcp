@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 — 2026-11-12
+
+- **HTTP 우선 전송**: `eclass-mcp login`으로 전용 브라우저 세션을 한 번 저장하고, 이후 Canvas/LearningX 조회·다운로드는 브라우저 없이 `httpx`로 처리. `Storage.getCookies`로 HttpOnly 쿠키를 수집한다.
+- `login`, `logout` 명령과 `ECLASS_SESSION_FILE` 추가. 세션 파일은 `.cau.ac.kr` 쿠키만 담고 `0600`으로 저장.
+- 20초 TTL 캐시와 single-flight로 반복 GET을 줄이고, 401/로그인 HTML 시 열린 로그인 브라우저에서 세션 자동 갱신.
+- `get_briefing`, `list_todo` 추가. 과목·todo 마감·최근 공지를 한 번에 반환하며 공지는 최대 4개 과목씩 병렬 조회.
+- HTTP 모드에서 Commons PDF·영상 원본/재생용 MP4 다운로드 지원. OZ 계획서 PDF와 실제 제출은 기존 브라우저 경로로 위임.
+- `ECLASS_BROWSER` 기본값을 자동 선택(http → aside → http)으로 변경. 기존 `aside`/`cdp` 설정은 그대로 동작.
+- 개선 전후 측정: 서버 트리 RSS 231→약 111 MiB, 6과목 요약 요청 13→8회, 합성 지연 0.679→0.212초. 자세한 방법과 한계는 `docs/benchmarks.md`.
+- 문서·스킬에 HTTP 세션, 캐시, 보안 경계, Go/Rust 이전 검토 추가.
+
 ## 0.3.0 — 2026-10-27
 
 - Commons 네이티브 원본 PDF 다운로드와 페이지별 본문 읽기. 원본 endpoint 실패 시 뷰어가 제공한 원본 URI 사용.

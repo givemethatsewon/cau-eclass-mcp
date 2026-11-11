@@ -32,3 +32,5 @@ test-results/
 /.secrets/
 *.pem
 *.key
+session.json
+*.session.json

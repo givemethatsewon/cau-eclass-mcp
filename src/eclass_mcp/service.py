@@ -105,6 +105,11 @@ class EClassService:
     async def get(self, path, lx=False, html=False):
         return (await self.transport.get(path, learningx=lx, html=html))["body"]
 
+    def invalidate(self):
+        clear = getattr(self.transport, "clear", None)
+        if callable(clear):
+            clear()
+
     async def paged(self, path, lx=False, max_pages=20):
         items, seen = [], set()
         for _ in range(max_pages):
@@ -134,6 +139,7 @@ class EClassService:
             "authenticated": True,
             "user": select(user, "id", "name"),
             "submission_enabled": self.enable_submission,
+            "transport": getattr(self.transport, "kind", "custom"),
         }
 
     async def courses(self, query=None, term=None):
@@ -146,6 +152,117 @@ class EClassService:
             if isinstance(course.get("term"), dict):
                 course["term"] = select(course["term"], "id", "name")
         return result
+
+    async def todo(self):
+        return await self.paged("/api/v1/users/self/todo?per_page=100")
+
+    async def briefing(self, days=14, course_limit=12):
+        """One bounded pass over courses, todo items and recent announcements."""
+        if not 1 <= days <= 60:
+            raise EClassError("briefing days must be between 1 and 60")
+        if not 1 <= course_limit <= 30:
+            raise EClassError("briefing course_limit must be between 1 and 30")
+
+        today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+        start = today - timedelta(days=days - 1)
+        warnings = []
+
+        courses = await self.courses()
+        selected = courses["items"][:course_limit]
+        complete = courses["complete"]
+        if len(courses["items"]) > len(selected):
+            warnings.append(
+                f"course_limit={course_limit} truncated {len(courses['items'])} courses"
+            )
+
+        try:
+            todo = await self.todo()
+        except EClassError as error:
+            todo = {"items": [], "complete": False, "next_cursor": None}
+            warnings.append(f"Todo list unavailable: {error}")
+        complete = complete and todo["complete"]
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def notices(course):
+            async with semaphore:
+                try:
+                    result = await self.announcements(
+                        course["id"], start.isoformat(), today.isoformat()
+                    )
+                    return course, result, None
+                except EClassError as error:
+                    return course, None, str(error)
+                except Exception:
+                    return course, None, "announcement request failed"
+
+        gathered = await asyncio.gather(
+            *(notices(course) for course in selected), return_exceptions=True
+        )
+        announcements = []
+        for entry in gathered:
+            if isinstance(entry, BaseException):
+                complete = False
+                warnings.append("An announcement request failed")
+                continue
+            course, result, error = entry
+            if error is not None:
+                complete = False
+                warnings.append(f"Course {course['id']} announcements unavailable: {error}")
+                continue
+            complete = complete and result["complete"]
+            for announcement in result["items"]:
+                posted = announcement.get("posted_at") or announcement.get("created_at")
+                announcements.append(
+                    {
+                        "id": announcement.get("id"),
+                        "course_id": course["id"],
+                        "course_name": course.get("name"),
+                        "title": announcement.get("title") or announcement.get("topic_title"),
+                        "posted_at": posted,
+                        "read_state": announcement.get("read_state"),
+                        "author": (announcement.get("author") or {}).get("display_name")
+                        if isinstance(announcement.get("author"), dict) else None,
+                    }
+                )
+        announcements.sort(key=lambda item: item.get("posted_at") or "", reverse=True)
+
+        deadlines = []
+        for entry in todo["items"]:
+            for key in ("assignment", "quiz"):
+                value = entry.get(key)
+                if not isinstance(value, dict):
+                    continue
+                due_at = value.get("due_at")
+                if not due_at:
+                    continue
+                deadlines.append(
+                    {
+                        "kind": "assignment" if key == "assignment" else "quiz",
+                        "id": value.get("id"),
+                        "title": value.get("name") or value.get("title"),
+                        "course_id": entry.get("course_id") or value.get("course_id"),
+                        "course_name": entry.get("context_name"),
+                        "points_possible": value.get("points_possible"),
+                        **date_fields(value),
+                    }
+                )
+                break
+        deadlines.sort(key=lambda item: item.get("due_at") or "")
+
+        return {
+            "range": {"start_date": start.isoformat(), "end_date": today.isoformat()},
+            "courses": selected,
+            "deadlines": deadlines,
+            "announcements": announcements,
+            "counts": {
+                "courses": len(selected),
+                "deadlines": len(deadlines),
+                "announcements": len(announcements),
+            },
+            "complete": complete,
+            "warnings": warnings,
+        }
 
     async def modules(self, course_id):
         modules = await self.get(f"/learningx/api/v1/courses/{course_id}/modules?include_detail=true", True)
@@ -526,6 +643,8 @@ class EClassService:
         }
 
     async def prepare(self, course_id, assignment_id, files):
+        # A submission plan must not be built from a cached pre-write snapshot.
+        self.invalidate()
         a = await self.assignment(course_id, assignment_id)
         user = (await self.session_status())["user"]
         existing = await self.submission(course_id, assignment_id)
@@ -627,6 +746,8 @@ class EClassService:
         plan["state"] = "in_flight"
         try:
             receipt = await self.transport.submit_files(payload)
+            # Do not let a cached pre-submit read hide the write we just made.
+            self.invalidate()
             stored = await self.submission(plan["course_id"], plan["assignment_id"])
             expected = {str(i) for i in receipt["file_ids"]}
             actual = {str(f["id"]) for f in stored.get("attachments", [])}
