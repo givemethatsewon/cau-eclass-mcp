@@ -61,6 +61,33 @@ Python이 런타임에 반드시 필요한 로직은 없다. 남은 것은 언�
 
 즉, OZ PDF만 브라우저 도우미로 남기고 나머지는 Rust로 통일할 수 있다.
 
+## OZ PDF 분석 결과
+
+실제 강좌의 수업계획서를 Aside로 열어 읽기 전용으로 관찰했다.
+
+- OZ 뷰어는 `rpt80.cau.ac.kr/oz80/ozViewer.jsp`를 iframe으로 열고,
+  보고서 데이터는 `/oz80/server` XHR 4회로 가져온다.
+- Save 대화상자에서 `Adobe PDF File(*.pdf)`를 선택하고 OK를 누르면
+  브라우저 다운로드 `noname.pdf`가 생성되지만, **추가 네트워크 요청은 없다.**
+- 즉 PDF는 서버가 바로 내려주는 파일이 아니라 OZJSViewer가 브라우저 안에서
+  보고서 데이터를 렌더링해 만든다. `/oz80/server` 응답에는 PDF URL이 없다.
+
+따라서 OZ PDF를 순수 Rust HTTP만으로 얻는 방법은 사실상 없다. 선택지는:
+
+1. Rust에서 headless Chrome을 제어해 OZ 뷰어를 실행하고 PDF를 받는다
+   (`chromiumoxide`, `headless_chrome` 등). CDP를 내부적으로 쓰지만 사용자가
+   remote debugging 포트를 관리할 필요는 없다.
+2. macOS/Windows WebView(`wry`)에 OZ 뷰어를 띄우고 PDF로 저장한다.
+   플랫폼별 동작 차이가 크고 구현 비용이 높다.
+3. OZJSViewer를 JS 런타임과 DOM/Canvas로 재현한다. 6.4MB 규모의
+   비공개 뷰어 엔진을 유지해야 하므로 권장하지 않는다.
+4. OZ PDF만 Python/Playwright 헬퍼로 남긴다. MCP 서버는 Rust 하나로 유지하고,
+   필요할 때만 헬퍼를 호출한다.
+
+권장은 1번(가능하면 headless Chrome을 Rust에서 관리) 또는 4번이다. 어느 쪽이든
+OZ PDF는 “브라우저 경계”로 남는다. 반면 과제 제출은 Canvas HTTP 업로드로
+Rust에 이식했으므로 브라우저가 필요 없다.
+
 ## 배포: Rust가 더 단순해질 수 있다
 
 사용자는 Rust, Python, uv, 가상환경을 설치할 필요가 없다. GitHub Releases의
