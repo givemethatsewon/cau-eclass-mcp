@@ -22,11 +22,11 @@ from .session import (
     USER_AGENT,
     Session,
     SessionExpired,
+    chrome_profile_dir,
     default_session_file,
     load_session,
     merge_cookies,
-    refresh_session,
-    session_endpoint,
+    refresh_from_profile,
 )
 from .transport import ORIGIN, EClassError, local_path
 
@@ -107,11 +107,14 @@ class HTTPTransport:
         session: Session | None = None,
         endpoint: str | None = None,
         session_file: Path | None = None,
+        profile_dir: Path | None = None,
         client: httpx.AsyncClient | None = None,
     ):
+        del endpoint  # Kept for callers of the pre-profile transport API.
         self.session = session
         self.session_file = session_file or default_session_file()
-        self.endpoint = endpoint or session_endpoint()
+        self.profile_dir = profile_dir or chrome_profile_dir()
+        self.endpoint = os.getenv("ECLASS_CDP_ENDPOINT", "http://127.0.0.1:9222")
         self._client = client
         self._owns_client = client is None
         self._browser = None
@@ -128,7 +131,7 @@ class HTTPTransport:
                 "No saved e-Class session. Run `eclass-mcp login` once, or set "
                 "ECLASS_BROWSER=aside to use the legacy Aside adapter."
             )
-        return cls(session=session, endpoint=session.endpoint, session_file=path)
+        return cls(session=session, session_file=path)
 
     async def __aenter__(self):
         if self._client is None and self.session is None:
@@ -168,7 +171,11 @@ class HTTPTransport:
 
     async def refresh(self) -> Session:
         async with self._refresh_lock:
-            session = await refresh_session(self.endpoint, self.session_file)
+            session = await refresh_from_profile(
+                self.profile_dir,
+                (self.session.browser if self.session else None) or "chrome",
+                self.session_file,
+            )
             self.session = session
             if self._client is not None:
                 self._client.cookies = session.as_cookies()

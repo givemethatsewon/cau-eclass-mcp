@@ -38,7 +38,9 @@ def main():
         version = run([str(executable), "--version"], env=env, cwd=root).strip()
         skill = run([str(executable), "skill"], env=env, cwd=root)
         assert "name: cau-eclass" in skill
-        config = json.loads(run([str(executable), "--browser", "cdp", "config"], env=env, cwd=root))
+        config = json.loads(
+            run([str(executable), "config"], env={**env, "ECLASS_BROWSER": "cdp"}, cwd=root)
+        )
         entry = config["mcpServers"]["eclass"]
         assert entry["env"]["ECLASS_BROWSER"] == "cdp"
         # Verify config preserves the virtualenv interpreter, rather than resolving its symlink.
@@ -46,8 +48,8 @@ def main():
             run([entry["command"], "-m", "eclass_mcp.cli", "--version"], env=env, cwd=root).strip() == version
         )
         result = subprocess.run(
-            [str(executable), "--cdp-endpoint", "http://127.0.0.1:1", "doctor"],
-            env=env,
+            [str(executable), "doctor"],
+            env={**env, "ECLASS_BROWSER": "cdp", "ECLASS_CDP_ENDPOINT": "http://127.0.0.1:1"},
             cwd=root,
             encoding="utf-8",
             capture_output=True,

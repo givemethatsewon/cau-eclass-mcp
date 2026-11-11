@@ -17,11 +17,12 @@ from .config import create_transport, resolve_backend
 from .http_transport import HTTPTransport
 from .service import EClassService
 from .session import (
+    chrome_profile_dir,
     default_session_file,
     delete_session,
     load_session,
-    login_via_cdp,
-    refresh_session,
+    login_from_profile,
+    refresh_from_profile,
     save_session,
 )
 from .transport import EClassError
@@ -35,7 +36,7 @@ def generated_config(client: str):
     backend = os.getenv("ECLASS_BROWSER") or resolve_backend()
     env = {"ECLASS_BROWSER": backend, "ECLASS_ENABLE_SUBMISSION": "0"}
     for key in (
-        "ECLASS_CDP_ENDPOINT",
+        "ECLASS_CHROME_PROFILE",
         "ECLASS_ASIDE_BIN",
         "ECLASS_ASIDE_PROFILE",
         "ECLASS_DOWNLOAD_DIR",
@@ -104,8 +105,12 @@ async def doctor():
         checks.update(ok=False, error=str(error))
         if backend == "http":
             try:
-                refreshed = await refresh_session()
-                async with HTTPTransport(session=refreshed) as transport:
+                path = default_session_file()
+                existing = load_session(path)
+                browser = existing.browser if existing and existing.browser else "chrome"
+                profile = Path(os.getenv("ECLASS_CHROME_PROFILE", str(chrome_profile_dir()))).expanduser()
+                refreshed = await refresh_from_profile(profile, browser, path)
+                async with HTTPTransport(session=refreshed, profile_dir=profile) as transport:
                     status = await EClassService(transport).session_status()
                 checks.update(
                     ok=bool(status.get("authenticated")),
@@ -166,12 +171,21 @@ def find_browser(explicit: str | None = None) -> Path:
     )
 
 
-def launch_browser(executable: Path, profile_dir: Path, port: int, url: str) -> None:
+def browser_id(executable: Path | None) -> str:
+    name = (executable.name if executable else "chrome").lower()
+    if "edge" in name:
+        return "edge"
+    if "brave" in name:
+        return "brave"
+    if "chromium" in name:
+        return "chromium"
+    return "chrome"
+
+
+def launch_browser(executable: Path, profile_dir: Path, url: str) -> None:
     profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     args = [
         str(executable),
-        "--remote-debugging-address=127.0.0.1",
-        f"--remote-debugging-port={port}",
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -190,26 +204,27 @@ def launch_browser(executable: Path, profile_dir: Path, port: int, url: str) -> 
 
 
 async def login(args):
-    endpoint = args.login_cdp_endpoint or args.cdp_endpoint or f"http://127.0.0.1:{args.port}"
-    if not args.no_launch:
-        executable = find_browser(args.browser_path)
-        profile = Path(args.profile_dir).expanduser().resolve()
-        launch_browser(executable, profile, args.port, "https://eclass3.cau.ac.kr/")
+    profile = Path(args.profile_dir).expanduser().resolve()
+    executable = None if args.no_launch else find_browser(args.browser_path)
+    browser = args.browser_id or browser_id(executable)
+    if executable:
+        launch_browser(executable, profile, "https://eclass3.cau.ac.kr/")
         print(
-            "A dedicated browser window is open. Sign in to e-Class; this command waits "
-            f"up to {args.timeout} seconds.",
+            "A Chrome window is open. Sign in to e-Class; this command waits "
+            f"up to {args.timeout} seconds. If it stalls, close Chrome after signing in.",
             file=sys.stderr,
             flush=True,
         )
     else:
-        print(
-            f"Reading the existing Chromium debugging session at {endpoint}.",
-            file=sys.stderr,
-            flush=True,
-        )
-    session = await login_via_cdp(
-        endpoint, timeout=args.timeout, wait_for_browser=not args.no_launch
-    )
+        print(f"Reading cookies from the existing Chrome profile at {profile}.", file=sys.stderr, flush=True)
+    session = await login_from_profile(profile, browser, timeout=args.timeout)
+    if not session.token("xn_api_token") and executable:
+        try:
+            launch_browser(executable, profile, "https://eclass3.cau.ac.kr/learningx/main")
+            await asyncio.sleep(2)
+            session = await refresh_from_profile(profile, browser)
+        except EClassError:
+            pass
     path = save_session(
         session, Path(args.session_file).expanduser() if args.session_file else None
     )
@@ -219,6 +234,8 @@ async def login(args):
                 "ok": True,
                 "authenticated": True,
                 "session_file": str(path),
+                "profile_dir": str(profile),
+                "browser": browser,
                 "saved_at": session.saved_at,
                 "learningx_token": bool(session.token("xn_api_token")),
             },
@@ -240,10 +257,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="CAU e-Class MCP: reuse a logged-in browser over HTTP")
     parser.add_argument("--version", action="version", version=version())
     parser.add_argument(
-        "--browser", choices=("http", "aside", "cdp"), help="Transport (env: ECLASS_BROWSER)"
-    )
-    parser.add_argument(
-        "--cdp-endpoint", help="Local Chromium CDP URL for login or the legacy cdp adapter"
+        "--browser", choices=("http", "aside"), help="Transport (env: ECLASS_BROWSER)"
     )
     parser.add_argument("--download-dir", type=Path, help="Absolute directory for downloaded files")
     parser.add_argument("--session-file", type=Path, help="Saved session path (env: ECLASS_SESSION_FILE)")
@@ -253,21 +267,20 @@ def main(argv=None):
     login_parser = commands.add_parser("login", help="Open a browser once and save its session")
     login_parser.add_argument("--browser-path", help="Chrome/Edge/Chromium executable")
     login_parser.add_argument(
-        "--cdp-endpoint",
-        dest="login_cdp_endpoint",
-        help="Existing Chromium CDP URL (with --no-launch)",
+        "--browser-id",
+        choices=("chrome", "edge", "brave", "chromium"),
+        help="Cookie reader identity; inferred from --browser-path when omitted",
     )
     login_parser.add_argument(
         "--profile-dir",
         default=str(Path.home() / ".cau-eclass" / "chrome-profile"),
         help="Dedicated browser profile directory",
     )
-    login_parser.add_argument("--port", type=int, default=9222, help="Local CDP port")
     login_parser.add_argument(
         "--timeout", type=float, default=300, help="Seconds to wait for the sign-in"
     )
     login_parser.add_argument(
-        "--no-launch", action="store_true", help="Read an already running CDP browser instead"
+        "--no-launch", action="store_true", help="Read cookies from an existing profile without opening Chrome"
     )
     commands.add_parser("logout", help="Delete the saved session")
     config = commands.add_parser("config", help="Print configuration; never modify client settings")
@@ -281,15 +294,6 @@ def main(argv=None):
         os.environ["ECLASS_BROWSER"] = args.browser
     if args.session_file:
         os.environ["ECLASS_SESSION_FILE"] = str(args.session_file.expanduser().resolve())
-    if args.cdp_endpoint:
-        from .cdp import validate_endpoint
-
-        try:
-            os.environ["ECLASS_CDP_ENDPOINT"] = validate_endpoint(args.cdp_endpoint)
-        except EClassError as error:
-            parser.error(str(error))
-        if args.command != "login" and args.browser != "aside":
-            os.environ["ECLASS_BROWSER"] = "cdp"
     if args.download_dir:
         os.environ["ECLASS_DOWNLOAD_DIR"] = str(args.download_dir.expanduser().resolve())
     if args.command == "login":

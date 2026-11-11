@@ -11,7 +11,6 @@ import pytest_asyncio
 
 from eclass_mcp.cdp import CDPTransport
 from eclass_mcp.service import EClassService
-from eclass_mcp.session import Session, harvest_cdp
 from eclass_mcp.transport import ORIGIN, EClassError
 
 
@@ -140,16 +139,12 @@ async def test_real_cdp_read_pdf_and_disconnect(chromium_endpoint, tmp_path):
         async with Client(
             StdioTransport(
                 command=sys.executable,
-                args=[
-                    "-m",
-                    "eclass_mcp.cli",
-                    "--browser",
-                    "cdp",
-                    "--cdp-endpoint",
-                    chromium_endpoint,
-                    "serve",
-                ],
-                env={"ECLASS_ENABLE_SUBMISSION": "0"},
+                args=["-m", "eclass_mcp.cli", "serve"],
+                env={
+                    "ECLASS_BROWSER": "cdp",
+                    "ECLASS_CDP_ENDPOINT": chromium_endpoint,
+                    "ECLASS_ENABLE_SUBMISSION": "0",
+                },
             )
         ) as client:
             assert {"list_materials", "download_material", "read_material"} <= {
@@ -163,28 +158,3 @@ async def test_real_cdp_read_pdf_and_disconnect(chromium_endpoint, tmp_path):
     async with async_playwright() as control:
         browser = await control.chromium.connect_over_cdp(chromium_endpoint)
         assert any(p.url == ORIGIN + "/courses/1" for p in browser.contexts[0].pages)
-
-
-async def test_harvest_cdp_includes_httponly_cookies(chromium_endpoint):
-    from playwright.async_api import async_playwright
-
-    async with async_playwright() as control:
-        browser = await control.chromium.connect_over_cdp(chromium_endpoint)
-        await browser.contexts[0].add_cookies(
-            [
-                {
-                    "name": "sid",
-                    "value": "synthetic-session",
-                    "domain": ".cau.ac.kr",
-                    "path": "/",
-                    "secure": True,
-                    "httpOnly": True,
-                },
-                {"name": "foreign", "value": "no", "domain": ".example.com", "path": "/"},
-            ]
-        )
-    cookies = await harvest_cdp(chromium_endpoint)
-    session = Session.from_cdp(cookies, endpoint=chromium_endpoint)
-    assert session.token("sid") == "synthetic-session"
-    assert session.token("foreign") is None
-    assert session.endpoint == chromium_endpoint

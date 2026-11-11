@@ -14,7 +14,7 @@ dependencies = [
     "beautifulsoup4>=4.12,<5",
     "pypdf>=6,<7",
     "httpx>=0.28,<1",
-    "websockets>=14,<18",
+    "browser-cookie3>=0.20,<0.21",
     "tzdata>=2025.2",
 ]
 
