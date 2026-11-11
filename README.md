@@ -1,18 +1,50 @@
 # CAU e-Class MCP
 
-**비공식 중앙대학교 e-Class 도구 · 비상업적 사용만 허용 · 상업적 사용 금지**
+**가볍고 빠른 중앙대학교 e-Class MCP**
 
-중앙대학교 e-Class의 강좌·공지·과제·마감일을 조회하고, 자료·계획서 PDF·영상을 내려받는 로컬 MCP 서버입니다. FastMCP 4.1.4와 stdio를 사용합니다.
+로그인만 브라우저에서 하고, 이후 강좌·공지·과제·자료 조회와 다운로드는 HTTP로 처리하는 로컬 MCP 서버입니다. Rust 코어는 단일 바이너리로 약 **0.03초**에 시작하고 **9.6 MiB** RSS로 동작합니다. Python 0.4.0은 OZ 계획서 PDF와 과제 제출까지 포함한 전체 기능 구현입니다.
 
-로그인은 브라우저에서 한 번만 합니다. 이후 조회와 다운로드는 **브라우저 탭을 거치지 않는 HTTP 요청**으로 처리합니다. 기본 실행에는 Playwright나 브라우저 자동화가 필요하지 않습니다.
+## 한눈에
+
+| | Rust core | Python 0.4.0 |
+|---|---|---|
+| 설치 | GitHub Releases 단일 바이너리 | `uv` / Python 환경 |
+| 시작 | **약 0.03초** | 약 0.58초 |
+| 유휴 메모리 | **약 9.6 MiB** | 약 106~111 MiB |
+| 브라우저 | 로그인할 때만 | 로그인 + OZ PDF·제출 |
+| 범위 | 읽기·다운로드·PDF 텍스트 | OZ PDF·과제 제출까지 |
+| 도구 | 27개 | 26개 |
+
+> Rust 코어는 현재 실험 단계입니다. OZ PDF 내보내기와 실제 과제 제출은 Python/브라우저 경로를 사용합니다.
 
 ## 설치
 
-Python 3.12 이상이 필요합니다. [uv](https://docs.astral.sh/uv/getting-started/installation/) 또는 pip으로 **0.4.0**을 설치합니다.
+### Rust (가장 가볍고 빠름)
+
+릴리스가 준비되면 GitHub Releases의 사전 빌드 바이너리를 설치합니다. 사용자는 Rust, Python, uv, 가상환경을 설치할 필요가 없습니다.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | sh
+eclass-mcp onboard --client claude
+```
+
+현재 작업 트리에서 직접 빌드하려면:
+
+```sh
+cd rust
+cargo build --release
+./target/release/eclass-mcp-rs onboard --client claude
+```
+
+자세한 배포·업데이트·서명 정책은 [rust/README.md](rust/README.md), [rust/RELEASING.md](rust/RELEASING.md)를 참고하세요.
+
+### Python 0.4.0 (전체 기능)
+
+Python 3.12 이상이 필요합니다. [uv](https://docs.astral.sh/uv/getting-started/installation/) 또는 pip으로 설치합니다.
 
 > 0.4.0은 현재 저장소 기준 버전입니다. PyPI 게시 전에는 아래 wheel 또는 소스 설치를 사용하세요.
 
-### PyPI
+#### PyPI
 
 ```sh
 uv tool install --python 3.12 cau-eclass-mcp==0.4.0
@@ -21,7 +53,7 @@ eclass-mcp --version
 
 [PyPI](https://pypi.org/project/cau-eclass-mcp/) · [GitHub Releases](https://github.com/givemethatsewon/cau-eclass-mcp/releases)
 
-### pip
+#### pip
 
 ```sh
 python -m venv .venv
@@ -36,7 +68,7 @@ python -m eclass_mcp.cli --version
 
 이하의 `eclass-mcp`는 `python -m eclass_mcp.cli`로 바꿔 실행해도 됩니다.
 
-### wheel 또는 소스
+#### wheel 또는 소스
 
 ```sh
 # 전달받은 wheel
@@ -56,10 +88,14 @@ uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.4.0'
 ## 로그인: 한 번만
 
 ```sh
+# Rust: 로그인 + 세션 검증 + 다음 액션 안내
+eclass-mcp onboard --client claude
+
+# Python: 세션 저장
 eclass-mcp login
 ```
 
-전용 Chrome/Edge/Chromium 프로필(`~/.cau-eclass/chrome-profile`)이 열립니다. e-Class에 직접 로그인하면 명령이 세션을 감지해 저장하고 종료됩니다. 기본 대기 시간은 300초입니다.
+Rust와 Python은 같은 `session.json` 형식을 사용합니다. 전용 Chrome/Edge/Chromium 프로필(`~/.cau-eclass/chrome-profile`)이 열리고, e-Class에 직접 로그인하면 세션을 감지해 저장합니다. 기본 대기 시간은 300초입니다.
 
 ```sh
 eclass-mcp doctor
@@ -94,13 +130,44 @@ eclass-mcp logout
 
 파일은 소유자만 읽을 수 있게 `0600`, 디렉터리는 `0700`으로 저장합니다. `ECLASS_SESSION_FILE`로 위치를 바꿀 수 있습니다.
 
+## 에이전트 온보딩
+
+Rust 코어는 세션이 없어도 MCP 서버가 시작됩니다. 에이전트는 `get_onboarding_status`로 다음 상태를 확인하고 `next_actions[].code`에 따라 안내합니다.
+
+- `RUN_ONBOARD`: 아직 로그인 전
+- `SESSION_EXPIRED`: 세션 만료
+- `OPEN_WEEKLY_LEARNING`: LearningX 토큰이 없음
+- `CHECK_ENROLLMENT`: 강좌 조회 실패 또는 0개
+- `CONFIGURE_CLIENT`: 준비 완료
+
+```json
+{
+  "schema_version": 1,
+  "session_state": "missing | expired | unavailable | authenticated",
+  "authenticated": false,
+  "learningx_token": false,
+  "courses_visible": null,
+  "ready": false,
+  "next_actions": [
+    {
+      "code": "RUN_ONBOARD",
+      "message": "Sign in to e-Class once in the dedicated browser.",
+      "command": "eclass-mcp onboard --client claude"
+    }
+  ]
+}
+```
+
+에이전트는 비밀번호·OTP·쿠키·세션 파일 내용을 채팅으로 요청하지 않습니다. 사용자가 브라우저에서 직접 로그인하고, 에이전트는 상태를 다시 확인해 다음 단계만 안내합니다. LearningX 토큰은 `onboard`/`login`이 주차학습 탭을 자동으로 열어 확보를 시도하고, 실패하면 수동 안내로 넘어갑니다.
+
 ## 왜 가벼운가
 
-- **브라우저는 로그인할 때만** 필요합니다. 이후 Canvas/LearningX JSON 조회와 파일 다운로드는 `httpx`가 처리합니다.
+- **브라우저는 로그인할 때만** 필요합니다. 이후 Canvas/LearningX JSON 조회와 파일 다운로드는 HTTP로 처리합니다.
+- Rust 코어는 **단일 14 MiB 바이너리**, 약 **0.03초 시작**, 약 **9.6 MiB 유휴 RSS**입니다.
 - 20초 TTL 캐시와 단일 비행(single-flight)으로 같은 주차·과목 응답을 반복 요청하지 않습니다. `ECLASS_CACHE_TTL=0`으로 끌 수 있습니다.
 - `get_briefing`은 과목 공지를 최대 4개씩 병렬로 읽어 한 번에 요약합니다.
-- 세션이 만료되면 열려 있는 로그인 브라우저에서 자동으로 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`). 브라우저가 없으면 `eclass-mcp login`을 안내합니다.
-- 계획서 OZ PDF 내보내기와 실제 과제 제출만 기존 브라우저 경로를 사용합니다.
+- 세션이 만료되면 열려 있는 로그인 브라우저에서 자동으로 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`).
+- OZ 계획서 PDF 내보내기와 실제 과제 제출만 기존 브라우저 경로를 사용합니다.
 
 ## 레거시 Aside·CDP 어댑터
 
@@ -159,7 +226,9 @@ eclass-mcp skill > ~/.agents/skills/cau-eclass/SKILL.md
 
 > eclass의 로그인 상태를 확인하고, 이번 주 마감과 공지를 요약해줘.
 
-`get_session_status`와 `get_briefing`으로 확인할 수 있습니다. 현재 **26개** 도구를 제공합니다.
+`get_session_status`와 `get_briefing`으로 확인할 수 있습니다. Python 0.4.0은 **26개**, Rust 코어는 `get_onboarding_status`를 더한 **27개** 도구를 제공합니다.
+
+- `get_onboarding_status` (Rust): 세션·LearningX 토큰·강좌 접근 상태와 다음 액션을 한 번에 반환합니다.
 
 - `get_briefing(days=14, course_limit=12)`: 수강 과목, 다가오는 todo 마감, 최근 공지를 한 번에 반환합니다. 일부 과목 조회가 실패하면 `complete=false`와 `warnings`를 함께 반환합니다.
 - `list_todo`: Canvas 통합 todo를 그대로 반환합니다.
@@ -224,7 +293,7 @@ PDF 응답은 페이지별 본문, 원본 페이지 수, 빈 본문 페이지, �
 
 | 기능 | 도구 |
 |---|---|
-| 세션·강좌·요약 | `get_session_status`, `list_courses`, `get_briefing`, `list_todo` |
+| 세션·강좌·요약 | `get_session_status`, `get_onboarding_status`(Rust), `list_courses`, `get_briefing`, `list_todo` |
 | 주차학습 | `list_learning_items` |
 | 통합 자료 | `list_materials`, `download_material`, `read_material` |
 | 공지 | `list_announcements`, `get_announcement` |
@@ -308,24 +377,16 @@ uv run python scripts/check_dist.py
 
 공개 문서와 테스트에는 가상 데이터만 사용합니다. 원본 조사 자료·실계정 검증 기록·개인용 조사 스크립트는 로컬에 보관하며 Git 및 배포본에서 제외합니다.
 
-## Rust core (experimental)
+## Rust 코어
 
-`rust/` now contains a standalone Rust implementation of the read/download core:
-session/CDP login, HTTP pagination and cache, courses/todo/briefing, materials,
-Commons PDF/video and Canvas downloads, PDF page text, and a minimal MCP stdio
-server. It reads the same `session.json` and measures about **0.03 s startup /
-9.6 MiB idle RSS** in the local harness.
+`rust/`에는 세션/CDP, HTTP 페이지네이션·캐시, 강좌·공지·과제·자료, Commons PDF/영상, Canvas 다운로드, PDF 텍스트와 MCP stdio 서버를 구현한 독립 Rust 크레이트가 있습니다. 같은 `session.json`을 사용하며, 로컬 측정 기준 **약 0.03초 시작 / 9.6 MiB 유휴 RSS / 14 MiB 바이너리**입니다.
 
 ```sh
 cd rust
 cargo run --release -- onboard --client claude
 ```
 
-User installation is designed around **GitHub Releases prebuilt binaries**, not
-a Rust/Python/uv install. See [rust/README.md](rust/README.md),
-[rust/RELEASING.md](rust/RELEASING.md), and the updated
-[Rust 전환 검토](docs/portability.md). OZ PDF export and assignment submission
-remain browser-bound; everything else is portable.
+사용자는 Rust/Python/uv 없이 GitHub Releases의 사전 빌드 바이너리를 설치하는 것을 목표로 합니다. OZ PDF와 과제 제출은 아직 브라우저 경로가 필요합니다. 자세한 내용은 [rust/README.md](rust/README.md), [rust/RELEASING.md](rust/RELEASING.md), [Rust 전환 검토](docs/portability.md)를 참고하세요.
 
 ## 라이선스
 
