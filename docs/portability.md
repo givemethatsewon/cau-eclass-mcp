@@ -68,9 +68,11 @@ Python이 런타임에 반드시 필요한 로직은 없다. 남은 것은 언�
 - OZ 뷰어는 `rpt80.cau.ac.kr/oz80/ozViewer.jsp`를 iframe으로 열고,
   보고서 데이터는 `/oz80/server` XHR 4회로 가져온다.
 - Save 대화상자에서 `Adobe PDF File(*.pdf)`를 선택하고 OK를 누르면
-  브라우저 다운로드 `noname.pdf`가 생성되지만, **추가 네트워크 요청은 없다.**
-- 즉 PDF는 서버가 바로 내려주는 파일이 아니라 OZJSViewer가 브라우저 안에서
-  보고서 데이터를 렌더링해 만든다. `/oz80/server` 응답에는 PDF URL이 없다.
+  `OZJSViewer_export.js`를 지연 로드한 뒤 브라우저 다운로드 `noname.pdf`가
+  생성된다. **PDF 파일 자체를 서버에서 받는 요청은 없다.**
+- 즉 PDF는 서버가 바로 내려주는 파일이 아니라 OZJSViewer의 내장 PDF writer가
+  브라우저 안에서 보고서 데이터를 렌더링해 만든다. `/oz80/server` 응답에는
+  PDF URL이 없다.
 
 따라서 OZ PDF를 순수 Rust HTTP만으로 얻는 방법은 사실상 없다. 선택지는:
 
