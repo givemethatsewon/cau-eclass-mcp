@@ -20,8 +20,8 @@ use url::Url;
 use crate::{
     error::EclassError,
     session::{
-        JSON_ACCEPT, ORIGIN, Session, USER_AGENT, default_session_file, load_session,
-        refresh_session, save_session, session_endpoint,
+        JSON_ACCEPT, ORIGIN, Session, USER_AGENT, chrome_profile_dir, default_session_file,
+        load_session, refresh_from_profile, save_session,
     },
 };
 
@@ -94,7 +94,7 @@ pub struct HttpTransport {
     base: Url,
     session: StdMutex<Session>,
     session_file: PathBuf,
-    endpoint: Option<String>,
+    profile_dir: PathBuf,
     cache: TtlCache,
     auto_refresh: bool,
     allowed_hosts: HashSet<String>,
@@ -117,13 +117,12 @@ impl HttpTransport {
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        let endpoint = session.endpoint.clone().or_else(|| session_endpoint().ok());
         Ok(Self {
             client,
             base,
             session: StdMutex::new(session),
             session_file,
-            endpoint,
+            profile_dir: chrome_profile_dir(),
             cache: TtlCache::new(cache_ttl),
             auto_refresh: std::env::var("ECLASS_AUTO_REFRESH").as_deref() != Ok("0"),
             allowed_hosts: DEFAULT_DOWNLOAD_HOSTS
@@ -142,15 +141,15 @@ impl HttpTransport {
         Self::from_session(None, None)
     }
 
-    /// Load a session from an explicit path or the environment, with an optional CDP override.
+    /// Load a session from an explicit path or the environment, with an optional Chrome profile.
     pub fn from_session(
         path: Option<PathBuf>,
-        endpoint: Option<String>,
+        profile: Option<PathBuf>,
     ) -> Result<Self, EclassError> {
         let path = path.unwrap_or_else(default_session_file);
         let loaded = load_session(&path)?;
         let has_session = loaded.is_some();
-        let session = loaded.unwrap_or_else(|| Session::from_cdp(Vec::new(), None));
+        let session = loaded.unwrap_or_else(|| Session::from_browser(Vec::new(), None));
         let ttl = std::env::var("ECLASS_CACHE_TTL")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -158,10 +157,17 @@ impl HttpTransport {
         let mut transport =
             Self::new(session, path, Url::parse(ORIGIN)?, Duration::from_secs(ttl))?;
         transport.has_session.store(has_session, Ordering::Relaxed);
-        if let Some(endpoint) = endpoint {
-            transport.endpoint = Some(endpoint);
+        if let Some(profile) = profile {
+            transport.profile_dir = profile;
         }
         Ok(transport)
+    }
+
+    /// Set the Chrome profile used for automatic session refresh.
+    #[must_use]
+    pub fn with_profile_dir(mut self, profile: PathBuf) -> Self {
+        self.profile_dir = profile;
+        self
     }
 
     /// Whether a session file was loaded (it may still be expired).
@@ -193,10 +199,15 @@ impl HttpTransport {
         self.cache.clear().await;
     }
 
-    /// Refresh the session from a local browser and persist it.
+    /// Refresh the session from the dedicated Chrome profile and persist it.
     pub async fn refresh(&self) -> Result<(), EclassError> {
-        let endpoint = self.endpoint.clone().ok_or(EclassError::CdpUnavailable)?;
-        let mut session = refresh_session(&endpoint).await?;
+        let browser = self
+            .session
+            .lock()
+            .ok()
+            .and_then(|session| session.browser.clone())
+            .unwrap_or_else(|| "chrome".to_string());
+        let mut session = refresh_from_profile(&self.profile_dir, &browser).await?;
         save_session(&mut session, &self.session_file)?;
         *self
             .session

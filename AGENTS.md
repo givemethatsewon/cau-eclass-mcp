@@ -34,7 +34,7 @@ For the Rust path, read `rust/ONBOARDING.md` before guiding a user.
 Python:
 
 ```sh
-uv sync --frozen --extra cdp
+uv sync --frozen --extra browser
 uv run pytest -q
 uv run ruff check src tests scripts
 ```

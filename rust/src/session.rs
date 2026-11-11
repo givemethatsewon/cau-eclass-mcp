@@ -1,20 +1,17 @@
-//! Browser-session persistence and Chromium cookie harvesting.
+//! Browser-session persistence and Chrome profile cookie import.
 //!
 //! The file format is compatible with the Python build: `.cau.ac.kr` cookies,
-//! an optional CDP endpoint, and a `version: 1` envelope.
+//! an optional browser id, and a `version: 1` envelope.
 
 use std::{
     collections::BTreeMap,
     env, fs,
-    net::IpAddr,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::{SecondsFormat, Utc};
-use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio_tungstenite::connect_async;
 use url::Url;
 
 use crate::error::EclassError;
@@ -57,13 +54,15 @@ pub struct Session {
     pub saved_at: String,
     #[serde(default)]
     pub endpoint: Option<String>,
+    #[serde(default)]
+    pub browser: Option<String>,
     pub cookies: Vec<Cookie>,
 }
 
 impl Session {
-    /// Build a session, keeping only CAU cookies and preserving a deterministic order.
+    /// Build a session from browser cookies, keeping only CAU cookies.
     #[must_use]
-    pub fn from_cdp(cookies: Vec<Cookie>, endpoint: Option<String>) -> Self {
+    pub fn from_browser(cookies: Vec<Cookie>, browser: Option<String>) -> Self {
         let mut values: BTreeMap<(String, String, String), Cookie> = BTreeMap::new();
         for cookie in cookies {
             if cookie.name.is_empty() || !is_cau_domain(&cookie.domain) {
@@ -84,9 +83,18 @@ impl Session {
         Self {
             version: 1,
             saved_at: now_iso(),
-            endpoint,
+            endpoint: None,
+            browser,
             cookies: values.into_values().collect(),
         }
+    }
+
+    /// Compatibility wrapper for older callers and session fixtures.
+    #[must_use]
+    pub fn from_cdp(cookies: Vec<Cookie>, endpoint: Option<String>) -> Self {
+        let mut session = Self::from_browser(cookies, None);
+        session.endpoint = endpoint;
+        session
     }
 
     /// Return the first non-expired value for a cookie name.
@@ -331,161 +339,124 @@ pub fn delete_session(path: &Path) -> Result<bool, EclassError> {
     }
 }
 
-/// Validate a CDP endpoint: loopback only, explicit port, no credentials or query.
-pub fn validate_endpoint(raw: &str) -> Result<String, EclassError> {
-    let url = Url::parse(raw).map_err(|_| EclassError::InvalidEndpoint)?;
-    let scheme = url.scheme();
-    if !matches!(scheme, "http" | "https" | "ws" | "wss") {
-        return Err(EclassError::InvalidEndpoint);
+/// Default Chrome profile used for the one-time sign-in.
+#[must_use]
+pub fn chrome_profile_dir() -> PathBuf {
+    if let Some(value) = env::var_os("ECLASS_CHROME_PROFILE") {
+        return expand_home(&PathBuf::from(value));
     }
-    let host = url.host_str().ok_or(EclassError::InvalidEndpoint)?;
-    let bare_host = host.trim_start_matches('[').trim_end_matches(']');
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || bare_host
-            .parse::<IpAddr>()
-            .map(|address| address.is_loopback())
-            .unwrap_or(false);
-    if !loopback
-        || url.port().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(EclassError::InvalidEndpoint);
-    }
-    Ok(raw.to_string())
+    home_dir().join(".cau-eclass/chrome-profile")
 }
 
-/// The configured CDP endpoint.
-pub fn session_endpoint() -> Result<String, EclassError> {
-    validate_endpoint(
-        &env::var("ECLASS_CDP_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:9222".to_string()),
-    )
-}
-
-/// Convert a WebSocket CDP URL to the HTTP URL used by `/json/version`.
-fn http_endpoint(raw: &str) -> Result<Url, EclassError> {
-    let mut url = Url::parse(raw).map_err(|_| EclassError::InvalidEndpoint)?;
-    match url.scheme() {
-        "ws" => {
-            url.set_scheme("http")
-                .map_err(|_| EclassError::InvalidEndpoint)?;
+fn cookie_store_candidates(profile: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![profile.join("Default")];
+    if let Ok(entries) = fs::read_dir(profile) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("Profile ") {
+                dirs.push(entry.path());
+            }
         }
-        "wss" => {
-            url.set_scheme("https")
-                .map_err(|_| EclassError::InvalidEndpoint)?;
-        }
-        "http" | "https" => {}
-        _ => return Err(EclassError::InvalidEndpoint),
     }
-    url.set_path("");
-    Ok(url)
+    dirs.into_iter()
+        .flat_map(|dir| [dir.join("Network/Cookies"), dir.join("Cookies")])
+        .filter(|path| path.is_file())
+        .collect()
 }
 
-/// Read cookies from a local Chromium debugging endpoint, including HttpOnly cookies.
-pub async fn harvest_cdp(endpoint: &str) -> Result<Vec<Cookie>, EclassError> {
-    let endpoint = validate_endpoint(endpoint)?;
-    let http = http_endpoint(&endpoint)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()?;
-    let version: serde_json::Value = client
-        .get(
-            http.join("json/version")
-                .map_err(|_| EclassError::CdpUnavailable)?,
-        )
-        .send()
-        .await
-        .map_err(|_| EclassError::CdpUnavailable)?
-        .json()
-        .await
-        .map_err(|_| EclassError::CdpUnavailable)?;
-    let websocket = version
-        .get("webSocketDebuggerUrl")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(EclassError::CdpUnavailable)?;
-    let (mut socket, _) = connect_async(websocket)
-        .await
-        .map_err(|_| EclassError::CdpUnavailable)?;
-    socket
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::json!({"id": 1, "method": "Storage.getCookies", "params": {}})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .map_err(|_| EclassError::CdpProtocol)?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let message = tokio::time::timeout_at(deadline, socket.next())
-            .await
-            .map_err(|_| EclassError::CdpProtocol)?
-            .ok_or(EclassError::CdpProtocol)?
-            .map_err(|_| EclassError::CdpProtocol)?;
-        let text = message.into_text().map_err(|_| EclassError::CdpProtocol)?;
-        let value: serde_json::Value =
-            serde_json::from_str(&text).map_err(|_| EclassError::CdpProtocol)?;
-        if value.get("id").and_then(serde_json::Value::as_u64) != Some(1) {
-            continue;
-        }
-        if value.get("error").is_some() {
-            return Err(EclassError::CdpProtocol);
-        }
-        let cookies = value
-            .get("result")
-            .and_then(|result| result.get("cookies"))
-            .and_then(serde_json::Value::as_array)
-            .ok_or(EclassError::CdpProtocol)?;
-        return cookies
-            .iter()
-            .map(|cookie| {
-                serde_json::from_value(cookie.clone()).map_err(|_| EclassError::CdpProtocol)
-            })
-            .collect();
+/// Read cookies from a Chrome/Chromium profile store.
+///
+/// The browser may need to be closed if it is locking the SQLite store.
+pub fn read_browser_cookies(profile: &Path, browser_id: &str) -> Result<Vec<Cookie>, EclassError> {
+    let candidates = cookie_store_candidates(profile);
+    if candidates.is_empty() {
+        return Err(EclassError::BrowserProfileUnavailable);
     }
-}
-
-/// Poll an open browser until the user has logged in.
-pub async fn login_via_cdp(
-    endpoint: &str,
-    timeout: std::time::Duration,
-    wait_for_browser: bool,
-) -> Result<Session, EclassError> {
-    let endpoint = validate_endpoint(endpoint)?;
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut last_error = EclassError::NotLoggedIn;
-    while tokio::time::Instant::now() < deadline {
-        match harvest_cdp(&endpoint).await {
+    let mut last_error = EclassError::CookieStoreUnavailable;
+    for candidate in candidates {
+        #[cfg(unix)]
+        let request =
+            rookie_cookies::direct_path::PathExtractRequest::unix_identity(candidate, browser_id);
+        #[cfg(windows)]
+        let request = rookie_cookies::direct_path::PathExtractRequest::windows_local_state(
+            candidate,
+            profile.join("Local State"),
+        );
+        match rookie_cookies::direct_path::extract_from_path(request) {
             Ok(cookies) => {
-                let mut session = Session::from_cdp(cookies, Some(endpoint.clone()));
-                if verify_session(&session).await {
-                    ensure_learningx_token(&mut session, Some(&endpoint)).await;
-                    return Ok(session);
-                }
-                last_error = EclassError::NotLoggedIn;
+                return Ok(cookies
+                    .into_iter()
+                    .map(|cookie| {
+                        let same_site = match cookie.same_site {
+                            0 => Some("None".to_string()),
+                            1 => Some("Lax".to_string()),
+                            2 => Some("Strict".to_string()),
+                            _ => None,
+                        };
+                        Cookie {
+                            name: cookie.name,
+                            value: cookie.value,
+                            domain: cookie.domain,
+                            path: cookie.path,
+                            expires: cookie.expires.map(|expires| expires as f64),
+                            secure: cookie.secure,
+                            http_only: cookie.http_only,
+                            same_site,
+                            host_only: None,
+                        }
+                    })
+                    .collect());
             }
             Err(error) => {
-                if !wait_for_browser && matches!(error, EclassError::CdpUnavailable) {
-                    return Err(error);
-                }
-                last_error = error;
+                last_error = if error.code() == "source_inspection_failed" {
+                    EclassError::CookieStoreUnavailable
+                } else {
+                    EclassError::BrowserProfileUnavailable
+                };
             }
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
     Err(last_error)
 }
 
-/// Reuse an already open login browser; fail promptly when it is absent.
-pub async fn refresh_session(endpoint: &str) -> Result<Session, EclassError> {
-    let endpoint = validate_endpoint(endpoint)?;
-    let cookies = harvest_cdp(&endpoint).await?;
-    let mut session = Session::from_cdp(cookies, Some(endpoint.clone()));
+/// Wait for a user login in the dedicated Chrome profile and snapshot its cookies.
+pub async fn login_from_profile(
+    profile: &Path,
+    browser_id: &str,
+    timeout: std::time::Duration,
+) -> Result<Session, EclassError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_error;
+    loop {
+        match read_browser_cookies(profile, browser_id) {
+            Ok(cookies) => {
+                let mut session = Session::from_browser(cookies, Some(browser_id.to_string()));
+                if verify_session(&session).await {
+                    ensure_learningx_token(&mut session).await;
+                    return Ok(session);
+                }
+                last_error = EclassError::NotLoggedIn;
+            }
+            Err(error) => last_error = error,
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(last_error);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Reuse cookies from an already signed-in Chrome profile; fail promptly when absent.
+pub async fn refresh_from_profile(
+    profile: &Path,
+    browser_id: &str,
+) -> Result<Session, EclassError> {
+    let cookies = read_browser_cookies(profile, browser_id)?;
+    let mut session = Session::from_browser(cookies, Some(browser_id.to_string()));
     if !verify_session(&session).await {
         return Err(EclassError::NotLoggedIn);
     }
-    ensure_learningx_token(&mut session, Some(&endpoint)).await;
+    ensure_learningx_token(&mut session).await;
     Ok(session)
 }
 
@@ -537,8 +508,8 @@ pub async fn verify_session(session: &Session) -> bool {
         .is_some_and(|id| !id.is_null())
 }
 
-/// Ask LearningX for its API token when the login flow has not set it yet.
-pub async fn ensure_learningx_token(session: &mut Session, endpoint: Option<&str>) {
+/// Ask LearningX for its API token with the saved cookies.
+pub async fn ensure_learningx_token(session: &mut Session) {
     if session.token("xn_api_token").is_some() {
         return;
     }
@@ -578,72 +549,6 @@ pub async fn ensure_learningx_token(session: &mut Session, endpoint: Option<&str
         if session.token("xn_api_token").is_some() {
             break;
         }
-    }
-    if session.token("xn_api_token").is_some() {
-        return;
-    }
-    let Some(endpoint) = endpoint else {
-        return;
-    };
-    let Ok(Some(target)) = open_learningx_tab(endpoint).await else {
-        return;
-    };
-    for _ in 0..5 {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if let Ok(cookies) = harvest_cdp(endpoint).await {
-            for cookie in cookies {
-                if is_cau_domain(&cookie.domain) {
-                    session.upsert(cookie);
-                }
-            }
-        }
-        if session.token("xn_api_token").is_some() {
-            break;
-        }
-    }
-    close_tab(endpoint, &target).await;
-}
-
-async fn open_learningx_tab(endpoint: &str) -> Result<Option<String>, EclassError> {
-    let http = http_endpoint(endpoint)?;
-    let mut url = http.join("json/new")?;
-    url.set_query(Some("https://eclass3.cau.ac.kr/learningx/main"));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()?;
-    let response = match client.put(url.clone()).send().await {
-        Ok(response) if response.status().is_success() => response,
-        _ => client
-            .get(url)
-            .send()
-            .await
-            .map_err(|_| EclassError::CdpUnavailable)?,
-    };
-    if !response.status().is_success() {
-        return Ok(None);
-    }
-    let value: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|_| EclassError::CdpProtocol)?;
-    Ok(value
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string))
-}
-
-async fn close_tab(endpoint: &str, target: &str) {
-    let Ok(http) = http_endpoint(endpoint) else {
-        return;
-    };
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-    else {
-        return;
-    };
-    if let Ok(url) = http.join(&format!("json/close/{target}")) {
-        let _ = client.get(url).send().await;
     }
 }
 
@@ -727,18 +632,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_remote_endpoints() {
-        for endpoint in [
-            "https://example.com:9222",
-            "http://127.0.0.1:9222?token=private",
-            "http://user:pass@localhost:9222",
-            "file:///tmp/devtools",
-            "http://0.0.0.0:9222",
-        ] {
-            assert!(validate_endpoint(endpoint).is_err(), "{endpoint}");
-        }
-        assert!(validate_endpoint("http://127.0.0.1:9222").is_ok());
-        assert!(validate_endpoint("ws://[::1]:9222/devtools/browser/test").is_ok());
+    fn missing_profile_returns_actionable_error() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            read_browser_cookies(directory.path(), "chrome"),
+            Err(EclassError::BrowserProfileUnavailable)
+        ));
     }
 
     #[test]

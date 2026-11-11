@@ -79,10 +79,10 @@ uv sync --frozen
 uv run eclass-mcp --help
 ```
 
-계획서 OZ PDF 내보내기, 실제 과제 제출, 레거시 CDP 어댑터를 쓸 때만 Playwright가 필요합니다.
+계획서 OZ PDF 내보내기와 실제 과제 제출을 쓸 때만 Playwright가 필요합니다.
 
 ```sh
-uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.4.0'
+uv tool install --python 3.12 'cau-eclass-mcp[browser]==0.4.0'
 ```
 
 ## 로그인: 한 번만
@@ -107,11 +107,11 @@ eclass-mcp config --client claude
 ### 로그인 옵션
 
 ```sh
-# 이미 remote debugging으로 실행 중인 브라우저를 사용
-eclass-mcp --cdp-endpoint http://127.0.0.1:9222 login --no-launch
+# 이미 로그인된 Chrome 프로필의 쿠키만 읽기
+eclass-mcp login --no-launch
 
-# 다른 브라우저/포트/프로필
-eclass-mcp login --browser-path "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" --port 9333
+# 다른 브라우저/프로필
+eclass-mcp login --browser-path "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" --browser-id edge
 eclass-mcp login --profile-dir ~/.cau-eclass/edge-profile
 
 # 세션 삭제
@@ -163,30 +163,20 @@ Rust 코어는 세션이 없어도 MCP 서버가 시작됩니다. 에이전트�
 ## 왜 가벼운가
 
 - **브라우저는 로그인할 때만** 필요합니다. 이후 Canvas/LearningX JSON 조회와 파일 다운로드는 HTTP로 처리합니다.
-- Rust 코어는 **단일 14 MiB 바이너리**, 약 **0.03초 시작**, 약 **9.6 MiB 유휴 RSS**입니다.
+- Rust 코어는 **단일 16 MiB 바이너리**, 약 **0.03초 시작**, 약 **9.6 MiB 유휴 RSS**입니다.
 - 20초 TTL 캐시와 단일 비행(single-flight)으로 같은 주차·과목 응답을 반복 요청하지 않습니다. `ECLASS_CACHE_TTL=0`으로 끌 수 있습니다.
 - `get_briefing`은 과목 공지를 최대 4개씩 병렬로 읽어 한 번에 요약합니다.
 - 세션이 만료되면 열려 있는 로그인 브라우저에서 자동으로 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`).
 - OZ 계획서 PDF 내보내기와 실제 과제 제출만 기존 브라우저 경로를 사용합니다.
 
-## 레거시 Aside·CDP 어댑터
+## 브라우저 프로필
 
-기존처럼 브라우저 탭에서 모든 요청을 실행할 수도 있습니다. 이 방식은 Playwright 또는 Aside가 필요하고, HTTP 모드보다 느립니다.
+Rust와 Python 모두 전용 Chrome 프로필(`~/.cau-eclass/chrome-profile`)에 로그인한 뒤 **쿠키 DB를 직접 읽습니다.** remote debugging 포트나 CDP 연결을 사용하지 않습니다.
 
-```sh
-# Aside
-eclass-mcp --browser aside doctor
-
-# 전용 Chromium 프로필 + CDP
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --remote-debugging-address=127.0.0.1 \
-  --remote-debugging-port=9222 \
-  --user-data-dir="$HOME/.cau-eclass/chrome-profile" \
-  https://eclass3.cau.ac.kr/
-eclass-mcp --browser cdp doctor
-```
-
-`ECLASS_BROWSER`를 지정하지 않으면 저장된 세션이 있을 때 `http`, 없고 Aside가 설치되어 있으면 `aside`, 그 외에는 `http`를 선택합니다.
+- `eclass-mcp login`이 Chrome을 열고, 로그인 후 프로필 쿠키를 세션으로 저장합니다.
+- Chrome이 쿠키 DB를 잠그고 있으면 로그인 후 Chrome을 닫고 다시 시도하세요.
+- `ECLASS_BROWSER=aside`는 Aside 기반 레거시 경로로만 남아 있습니다.
+- `ECLASS_CHROME_PROFILE`로 프로필 위치를 바꿀 수 있습니다.
 
 ## MCP 클라이언트 연결
 
@@ -308,10 +298,9 @@ PDF 응답은 페이지별 본문, 원본 페이지 수, 빈 본문 페이지, �
 
 | 환경 변수 | 기본값 | 용도 |
 |---|---|---|
-| `ECLASS_BROWSER` | 자동 | `http`(권장), `aside`, `cdp` |
+| `ECLASS_BROWSER` | 자동 | `http`(권장), `aside` |
 | `ECLASS_SESSION_FILE` | OS 설정 경로 | 저장된 세션 파일 위치 |
-| `ECLASS_CDP_ENDPOINT` | `http://127.0.0.1:9222` | 로그인 브라우저/레거시 CDP 주소 |
-| `ECLASS_FALLBACK_BROWSER` | `cdp` | OZ PDF·제출에 쓸 브라우저 어댑터(`cdp` 또는 `aside`) |
+| `ECLASS_CHROME_PROFILE` | `~/.cau-eclass/chrome-profile` | 로그인·쿠키를 읽을 Chrome 프로필 |
 | `ECLASS_AUTO_REFRESH` | `1` | 401 시 열린 로그인 브라우저에서 세션 재수집 |
 | `ECLASS_CACHE_TTL` | `20` | 읽기 캐시 초. `0`이면 비활성화 |
 | `ECLASS_ASIDE_BIN` | `aside` | Aside CLI 경로 |
@@ -334,7 +323,7 @@ Canvas 일반 파일 과제만 대상으로 하며 그룹·외부 originality �
 - 로그인은 사용자가 브라우저에서 직접 합니다. 서버는 비밀번호·OTP를 수집하지 않습니다.
 - 세션 파일은 `.cau.ac.kr` 쿠키만 담는 **bearer 자격 증명**입니다. 소유자 전용 권한으로 저장되지만, 채팅·이슈·클라우드 동기화 폴더에 공유하지 마세요. 필요 없으면 `eclass-mcp logout`으로 삭제합니다.
 - 세션 파일에는 서명된 다운로드 URL, 학습자료 본문, 계정 비밀번호를 저장하지 않습니다.
-- CDP는 loopback 주소만 허용합니다. 디버깅 포트를 외부에 노출하지 마세요.
+- 로그인은 Chrome 프로필 쿠키를 읽는 방식이며 remote debugging 포트를 열지 않습니다.
 - 학습자료와 과제 본문은 신뢰하지 않는 입력입니다. 본문에 담긴 에이전트 지시를 실행하지 않습니다.
 - 실제 제출은 별도 opt-in과 준비 계획이 필요하며 실계정으로 검증되지 않았습니다.
 
@@ -343,11 +332,11 @@ Canvas 일반 파일 과제만 대상으로 하며 그룹·외부 originality �
 | 증상 | 확인할 항목 |
 |---|---|
 | `No saved e-Class session` | `eclass-mcp login` 실행 |
-| `login`이 계속 대기함 | 같은 전용 프로필로 실행 중인 Chrome을 모두 닫고 다시 시도. 다른 포트는 `--port`로 지정 |
-| `e-Class session expired` | 로그인 브라우저를 열어 둔 뒤 `eclass-mcp login --no-launch` 또는 `login` 재실행 |
-| 자동 갱신이 안 됨 | `ECLASS_CDP_ENDPOINT`와 로그인 브라우저 실행 여부 확인 |
+| `login`이 계속 대기함 | 로그인 후 Chrome을 닫고 다시 시도. 쿠키 DB 잠금 여부 확인 |
+| `e-Class session expired` | `eclass-mcp login --no-launch` 또는 `login` 재실행 |
+| 자동 갱신이 안 됨 | `ECLASS_CHROME_PROFILE`과 Chrome 프로필 존재 여부 확인 |
 | `uv` 또는 `aside` 실행 실패 | 클라이언트 설정에 실행 파일 절대 경로 지정 |
-| `download_syllabus_pdf` 실패 | 로그인 브라우저가 열려 있는지, `[cdp]`가 설치됐는지 확인 |
+| `download_syllabus_pdf` 실패 | Python/Playwright 브라우저 도우미가 설치됐는지 확인 |
 | 새 도구가 안 보임 | MCP 재연결 또는 새 세션 시작 |
 | 원본 영상 다운로드 오류 | 서버 HTTP 500일 수 있음. 재생용 파일도 괜찮을 때만 대체 옵션 사용 |
 | 영상이 `not open` | 현재 계정에 공개되지 않은 영상. 다운로드 불가 |
@@ -356,12 +345,12 @@ Canvas 일반 파일 과제만 대상으로 하며 그룹·외부 originality �
 ## 개발·검증
 
 ```sh
-uv sync --frozen --extra cdp
+uv sync --frozen --extra browser
 uv run pytest -q
 uv run ruff check src tests scripts
 ```
 
-CDP 연결 테스트는 임시 Chromium 프로필과 synthetic 사이트 응답으로 실행합니다. 실제 계정 테스트와 구분합니다.
+브라우저 도우미 테스트는 임시 Chromium 프로필과 synthetic 사이트 응답으로 실행합니다. 실제 계정 테스트와 구분합니다.
 
 wheel과 소스 배포본 생성:
 
@@ -379,7 +368,7 @@ uv run python scripts/check_dist.py
 
 ## Rust 코어
 
-`rust/`에는 세션/CDP, HTTP 페이지네이션·캐시, 강좌·공지·과제·자료, Commons PDF/영상, Canvas 다운로드, PDF 텍스트와 MCP stdio 서버를 구현한 독립 Rust 크레이트가 있습니다. 같은 `session.json`을 사용하며, 로컬 측정 기준 **약 0.03초 시작 / 9.6 MiB 유휴 RSS / 14 MiB 바이너리**입니다.
+`rust/`에는 세션/Chrome 프로필 쿠키, HTTP 페이지네이션·캐시, 강좌·공지·과제·자료, Commons PDF/영상, Canvas 다운로드, PDF 텍스트와 MCP stdio 서버를 구현한 독립 Rust 크레이트가 있습니다. 같은 `session.json`을 사용하며, 로컬 측정 기준 **약 0.03초 시작 / 9.6 MiB 유휴 RSS / 16 MiB 바이너리**입니다.
 
 ```sh
 cd rust

@@ -17,8 +17,8 @@ use crate::{
     mcp,
     service::EClassService,
     session::{
-        default_session_file, delete_session, load_session, login_via_cdp, refresh_session,
-        save_session,
+        chrome_profile_dir, default_session_file, delete_session, load_session, login_from_profile,
+        refresh_from_profile, save_session,
     },
 };
 
@@ -32,9 +32,9 @@ struct Cli {
     /// Saved session path (env: ECLASS_SESSION_FILE).
     #[arg(long, global = true)]
     session_file: Option<PathBuf>,
-    /// Local Chromium CDP URL (env: ECLASS_CDP_ENDPOINT).
+    /// Dedicated Chrome profile directory (env: ECLASS_CHROME_PROFILE).
     #[arg(long, global = true)]
-    cdp_endpoint: Option<String>,
+    profile_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -45,20 +45,14 @@ enum Command {
     Serve,
     /// Check the saved session and login state.
     Doctor,
-    /// Open a browser once and save its session.
+    /// Open Chrome once, then import its profile cookies.
     Login {
         #[arg(long)]
         browser_path: Option<PathBuf>,
-        #[arg(long, default_value = "~/.cau-eclass/chrome-profile")]
-        profile_dir: PathBuf,
-        #[arg(long, default_value_t = 9222)]
-        port: u16,
         #[arg(long, default_value_t = 300.0)]
         timeout: f64,
         #[arg(long)]
         no_launch: bool,
-        #[arg(long)]
-        cdp_endpoint: Option<String>,
     },
     /// Delete the saved session.
     Logout,
@@ -66,16 +60,10 @@ enum Command {
     Onboard {
         #[arg(long)]
         browser_path: Option<PathBuf>,
-        #[arg(long, default_value = "~/.cau-eclass/chrome-profile")]
-        profile_dir: PathBuf,
-        #[arg(long, default_value_t = 9222)]
-        port: u16,
         #[arg(long, default_value_t = 300.0)]
         timeout: f64,
         #[arg(long)]
         no_launch: bool,
-        #[arg(long)]
-        cdp_endpoint: Option<String>,
         #[arg(long)]
         client: Option<String>,
     },
@@ -94,46 +82,27 @@ enum Command {
 pub async fn run() -> anyhow::Result<i32> {
     let cli = Cli::parse();
     let session_file = cli.session_file;
-    let default_endpoint = cli.cdp_endpoint;
+    let profile = cli.profile_dir.unwrap_or_else(chrome_profile_dir);
     match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(session_file, default_endpoint).await.map(|()| 0),
-        Command::Doctor => doctor(session_file, default_endpoint).await,
+        Command::Serve => serve(session_file, profile).await.map(|()| 0),
+        Command::Doctor => doctor(session_file, profile).await,
         Command::Login {
             browser_path,
-            profile_dir,
-            port,
             timeout,
             no_launch,
-            cdp_endpoint,
-        } => {
-            login(
-                browser_path,
-                profile_dir,
-                port,
-                timeout,
-                no_launch,
-                cdp_endpoint.or(default_endpoint),
-                session_file,
-            )
-            .await
-        }
+        } => login(browser_path, profile, timeout, no_launch, session_file).await,
         Command::Logout => logout(session_file),
         Command::Onboard {
             browser_path,
-            profile_dir,
-            port,
             timeout,
             no_launch,
-            cdp_endpoint,
             client,
         } => {
             onboard(
                 browser_path,
-                profile_dir,
-                port,
+                profile,
                 timeout,
                 no_launch,
-                cdp_endpoint.or(default_endpoint),
                 session_file,
                 client,
             )
@@ -143,9 +112,9 @@ pub async fn run() -> anyhow::Result<i32> {
     }
 }
 
-async fn serve(session_file: Option<PathBuf>, endpoint: Option<String>) -> anyhow::Result<()> {
-    let transport =
-        HttpTransport::from_session(session_file, endpoint).context("loading saved session")?;
+async fn serve(session_file: Option<PathBuf>, profile: PathBuf) -> anyhow::Result<()> {
+    let transport = HttpTransport::from_session(session_file, Some(profile))
+        .context("loading saved session")?;
     let service = EClassService::new(
         Arc::new(transport),
         None,
@@ -154,19 +123,19 @@ async fn serve(session_file: Option<PathBuf>, endpoint: Option<String>) -> anyho
     mcp::serve_stdio(service).await
 }
 
-async fn doctor(session_file: Option<PathBuf>, endpoint: Option<String>) -> anyhow::Result<i32> {
+async fn doctor(session_file: Option<PathBuf>, profile: PathBuf) -> anyhow::Result<i32> {
     let path = session_file.unwrap_or_else(default_session_file);
-    let endpoint = endpoint.unwrap_or_else(session_endpoint);
     let mut checks = json!({
         "version": env!("CARGO_PKG_VERSION"),
         "transport": "http",
+        "profile_dir": profile,
         "session_file": path,
         "session_present": path.exists(),
         "submission_enabled": std::env::var("ECLASS_ENABLE_SUBMISSION").as_deref() == Ok("1")
     });
     let session = match load_session(&path) {
         Ok(Some(session)) => session,
-        Ok(None) => match refresh_session(&endpoint).await {
+        Ok(None) => match refresh_from_profile(&profile, "chrome").await {
             Ok(mut session) => {
                 save_session(&mut session, &path)?;
                 checks["session_present"] = json!(true);
@@ -191,7 +160,8 @@ async fn doctor(session_file: Option<PathBuf>, endpoint: Option<String>) -> anyh
         path,
         url::Url::parse(crate::session::ORIGIN)?,
         Duration::from_secs(20),
-    )?;
+    )?
+    .with_profile_dir(profile);
     match EClassService::new(Arc::new(transport), None, false)
         .session_status()
         .await
@@ -211,34 +181,65 @@ async fn doctor(session_file: Option<PathBuf>, endpoint: Option<String>) -> anyh
     }
 }
 
+fn browser_id(executable: &Path) -> String {
+    let name = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("chrome")
+        .to_ascii_lowercase();
+    if name.contains("edge") {
+        "edge".to_string()
+    } else if name.contains("brave") {
+        "brave".to_string()
+    } else if name.contains("chromium") {
+        "chromium".to_string()
+    } else {
+        "chrome".to_string()
+    }
+}
+
 async fn login_flow(
     browser_path: Option<PathBuf>,
     profile_dir: PathBuf,
-    port: u16,
     timeout: f64,
     no_launch: bool,
-    cdp_endpoint: Option<String>,
     session_file: Option<PathBuf>,
 ) -> anyhow::Result<(crate::session::Session, PathBuf)> {
-    let endpoint = cdp_endpoint
-        .or_else(|| std::env::var("ECLASS_CDP_ENDPOINT").ok())
-        .unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
-    if !no_launch {
-        let executable = find_browser(browser_path)?;
-        let profile = expand_home(&profile_dir);
-        launch_browser(&executable, &profile, port)?;
+    let profile = expand_home(&profile_dir);
+    let executable = if no_launch {
+        None
+    } else {
+        Some(find_browser(browser_path)?)
+    };
+    let id = executable
+        .as_deref()
+        .map_or_else(|| "chrome".to_string(), browser_id);
+    if let Some(executable) = &executable {
+        launch_browser(executable, &profile, "https://eclass3.cau.ac.kr/")?;
         eprintln!(
-            "A dedicated browser window is open. Sign in to e-Class; this command waits up to {timeout} seconds."
+            "A Chrome window is open. Sign in to e-Class; this command waits up to {timeout} seconds. If it stalls, close Chrome after signing in."
         );
     } else {
-        eprintln!("Reading the existing Chromium debugging session at {endpoint}.");
+        eprintln!(
+            "Reading cookies from the existing Chrome profile at {}.",
+            profile.display()
+        );
     }
-    let mut session = login_via_cdp(
-        &endpoint,
-        Duration::from_secs_f64(timeout.max(1.0)),
-        !no_launch,
-    )
-    .await?;
+    let mut session =
+        login_from_profile(&profile, &id, Duration::from_secs_f64(timeout.max(1.0))).await?;
+    if session.token("xn_api_token").is_none()
+        && let Some(executable) = &executable
+    {
+        let _ = launch_browser(
+            executable,
+            &profile,
+            "https://eclass3.cau.ac.kr/learningx/main",
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if let Ok(refreshed) = refresh_from_profile(&profile, &id).await {
+            session = refreshed;
+        }
+    }
     let path = save_session(
         &mut session,
         &session_file.unwrap_or_else(default_session_file),
@@ -249,58 +250,44 @@ async fn login_flow(
 async fn login(
     browser_path: Option<PathBuf>,
     profile_dir: PathBuf,
-    port: u16,
     timeout: f64,
     no_launch: bool,
-    cdp_endpoint: Option<String>,
     session_file: Option<PathBuf>,
 ) -> anyhow::Result<i32> {
-    let (session, path) = login_flow(
-        browser_path,
-        profile_dir,
-        port,
-        timeout,
-        no_launch,
-        cdp_endpoint,
-        session_file,
-    )
-    .await?;
+    let profile_label = profile_dir.display().to_string();
+    let (session, path) =
+        login_flow(browser_path, profile_dir, timeout, no_launch, session_file).await?;
     print_json(&json!({
         "ok": true,
         "authenticated": true,
         "session_file": path,
+        "profile_dir": profile_label,
+        "browser": session.browser,
         "saved_at": session.saved_at,
         "learningx_token": session.token("xn_api_token").is_some()
     }))?;
     Ok(0)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "onboarding mirrors the login options"
-)]
 async fn onboard(
     browser_path: Option<PathBuf>,
     profile_dir: PathBuf,
-    port: u16,
     timeout: f64,
     no_launch: bool,
-    cdp_endpoint: Option<String>,
     session_file: Option<PathBuf>,
     client: Option<String>,
 ) -> anyhow::Result<i32> {
     let path = session_file.clone().unwrap_or_else(default_session_file);
+    let profile = expand_home(&profile_dir);
     let session = load_session(&path)?;
-    let authenticated = if let Some(mut session) = session {
-        if let Some(endpoint) = cdp_endpoint.as_ref() {
-            session.endpoint = Some(endpoint.clone());
-        }
+    let authenticated = if let Some(session) = session {
         let transport = HttpTransport::new(
             session,
             path.clone(),
             url::Url::parse(crate::session::ORIGIN)?,
             Duration::from_secs(20),
-        )?;
+        )?
+        .with_profile_dir(profile.clone());
         EClassService::new(Arc::new(transport), None, false)
             .session_status()
             .await
@@ -311,22 +298,21 @@ async fn onboard(
     if !authenticated {
         let _ = login_flow(
             browser_path,
-            profile_dir,
-            port,
+            profile.clone(),
             timeout,
             no_launch,
-            cdp_endpoint,
             session_file,
         )
         .await?;
     }
-    let session = load_session(&path)?.ok_or(crate::error::EclassError::NoSession)?;
+    let session = load_session(&path)?.ok_or(EclassError::NoSession)?;
     let transport = HttpTransport::new(
         session,
         path.clone(),
         url::Url::parse(crate::session::ORIGIN)?,
         Duration::from_secs(20),
-    )?;
+    )?
+    .with_profile_dir(profile);
     let status = EClassService::new(Arc::new(transport), None, false)
         .onboarding_status()
         .await;
@@ -363,7 +349,7 @@ fn config(client: &str, session_file: Option<PathBuf>) -> anyhow::Result<i32> {
     }
     for key in [
         "ECLASS_SESSION_FILE",
-        "ECLASS_CDP_ENDPOINT",
+        "ECLASS_CHROME_PROFILE",
         "ECLASS_DOWNLOAD_DIR",
         "ECLASS_CACHE_TTL",
         "ECLASS_AUTO_REFRESH",
@@ -398,10 +384,6 @@ fn print_json(value: &serde_json::Value) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     std::io::stdout().flush()?;
     Ok(())
-}
-
-fn session_endpoint() -> String {
-    std::env::var("ECLASS_CDP_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:9222".to_string())
 }
 
 fn expand_home(path: &Path) -> PathBuf {
@@ -482,16 +464,14 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn launch_browser(executable: &Path, profile: &Path, port: u16) -> anyhow::Result<()> {
+fn launch_browser(executable: &Path, profile: &Path, url: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(profile)?;
     std::process::Command::new(executable)
         .args([
-            "--remote-debugging-address=127.0.0.1".to_string(),
-            format!("--remote-debugging-port={port}"),
             format!("--user-data-dir={}", profile.display()),
             "--no-first-run".to_string(),
             "--no-default-browser-check".to_string(),
-            "https://eclass3.cau.ac.kr/".to_string(),
+            url.to_string(),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

@@ -26,6 +26,7 @@ html-escape = "0.3"
 lopdf = { version = "0.47", default-features = false }
 percent-encoding = "2"
 regex = "1"
+rookie-cookies = "0.6"
 reqwest = { version = "0.13", default-features = false, features = [
     "rustls",
     "json",
@@ -51,7 +52,6 @@ tokio = { version = "1", features = [
     "net",
     "sync",
 ] }
-tokio-tungstenite = { version = "0.30", features = ["connect", "rustls-tls-native-roots"] }
 unicode-normalization = "0.1"
 url = "2"
 

@@ -11,7 +11,7 @@ For the first beta, keep the release cheap and reversible:
 - Keep the install scripts version-pinnable (`ECLASS_VERSION=rust-v0.1.0`).
 - State clearly in the release notes that macOS/Windows binaries are unsigned.
 - Keep the Python `uv` path available as a fallback:
-  `uv tool install --python 3.12 'cau-eclass-mcp[cdp]==0.4.0'`.
+  `uv tool install --python 3.12 'cau-eclass-mcp[browser]==0.4.0'`.
 - Windows may show SmartScreen; macOS may show a Gatekeeper warning. Tell users
   how to verify the SHA-256 and how to proceed.
 

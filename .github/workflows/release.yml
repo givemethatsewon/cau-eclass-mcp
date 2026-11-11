@@ -32,7 +32,7 @@ jobs:
               version = tomllib.load(source)['project']['version']
           assert os.environ['RELEASE_REF'] == 'v' + version, 'Select the exact version tag'
           PY
-      - run: uv sync --frozen --extra cdp
+      - run: uv sync --frozen --extra browser
       - run: uv run ruff check src tests scripts
       - run: uv run pytest -q
       - run: uv run playwright install --with-deps chromium

@@ -45,10 +45,9 @@ def test_cdp_rejects_remote_or_secret_endpoint(endpoint):
 def test_cdp_loopback_and_config(monkeypatch, capsys):
     for endpoint in ("http://127.0.0.1:9222", "ws://[::1]:9222/devtools/browser/test"):
         assert validate_endpoint(endpoint) == endpoint
-    monkeypatch.setenv("ECLASS_BROWSER", "aside")
-    monkeypatch.delenv("ECLASS_CDP_ENDPOINT", raising=False)
+    monkeypatch.setenv("ECLASS_BROWSER", "cdp")
     monkeypatch.setenv("ECLASS_ENABLE_SUBMISSION", "1")
-    assert main(["--cdp-endpoint", "http://127.0.0.1:9222", "config", "--client", "codex"]) == 0
+    assert main(["config", "--client", "codex"]) == 0
     config = tomllib.loads(capsys.readouterr().out)["mcp_servers"]["eclass"]
     assert Path(config["command"]).is_file()
     assert config["env"]["ECLASS_BROWSER"] == "cdp"
@@ -88,25 +87,16 @@ def test_login_saves_the_detected_session(monkeypatch, tmp_path, capsys):
     path = tmp_path / "session.json"
     monkeypatch.setenv("ECLASS_SESSION_FILE", str(path))
 
-    async def fake_login(endpoint, timeout, wait_for_browser):
-        assert endpoint == "http://127.0.0.1:9222"
-        assert wait_for_browser is False
+    async def fake_login(profile, browser, timeout):
+        assert profile.name == "chrome-profile"
+        assert browser == "chrome"
         return Session(
             cookies=[{"name": "sid", "value": "synthetic", "domain": ".cau.ac.kr", "path": "/"}],
-            endpoint=endpoint,
+            browser="chrome",
         )
 
-    monkeypatch.setattr("eclass_mcp.cli.login_via_cdp", fake_login)
-    assert main(
-        [
-            "login",
-            "--no-launch",
-            "--cdp-endpoint",
-            "http://127.0.0.1:9222",
-            "--timeout",
-            "1",
-        ]
-    ) == 0
+    monkeypatch.setattr("eclass_mcp.cli.login_from_profile", fake_login)
+    assert main(["login", "--no-launch", "--timeout", "1"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["ok"] is True and path.exists()
     assert "synthetic" not in json.dumps(result)

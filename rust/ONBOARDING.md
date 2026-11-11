@@ -60,10 +60,9 @@ asserts that the synthetic token and cookie name do not appear.
 
 `login`/`onboard` first request `/learningx/main` and `/learningx/dashboard`
 with the saved cookies. If the API token is still absent, they open
-`/learningx/main` in the login browser through CDP, poll
-`Storage.getCookies` for `xn_api_token` up to ten seconds, then close the
-temporary tab. If the browser automation fails, the status keeps
-`OPEN_WEEKLY_LEARNING` and the manual fallback is used.
+`/learningx/main` in the dedicated Chrome profile, then poll the profile
+cookie database for `xn_api_token`. If the browser automation fails, the status
+keeps `OPEN_WEEKLY_LEARNING` and the manual fallback is used.
 
 ## Session storage
 

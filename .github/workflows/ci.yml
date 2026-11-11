@@ -30,7 +30,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: uv sync --frozen --extra cdp
+      - run: uv sync --frozen --extra browser
       - run: uv run ruff check src tests scripts
       - run: uv run pytest -q
       - run: uv build --no-sources
@@ -47,7 +47,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
-      - run: uv sync --frozen --extra cdp
+      - run: uv sync --frozen --extra browser
       - run: uv run playwright install --with-deps chromium
       - name: Test real local CDP with synthetic site responses
         run: |

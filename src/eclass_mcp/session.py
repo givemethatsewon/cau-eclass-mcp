@@ -16,11 +16,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 
-from .cdp import validate_endpoint
 from .transport import ORIGIN, EClassError
 
 COOKIE_DOMAIN = "cau.ac.kr"
@@ -72,9 +70,10 @@ class Session:
     saved_at: str = field(default_factory=now_iso)
     version: int = 1
     endpoint: str | None = None
+    browser: str | None = None
 
     @classmethod
-    def from_cdp(cls, cookies, endpoint: str | None = None) -> "Session":
+    def from_browser(cls, cookies, browser: str | None = None) -> "Session":
         values = {}
         for raw in cookies or []:
             if not isinstance(raw, dict) or not raw.get("name") or not _is_cau_domain(raw.get("domain")):
@@ -84,8 +83,14 @@ class Session:
             values[key] = cookie
         return cls(
             sorted(values.values(), key=lambda item: (item["name"], item.get("domain", ""))),
-            endpoint=endpoint,
+            browser=browser,
         )
+
+    @classmethod
+    def from_cdp(cls, cookies, endpoint: str | None = None) -> "Session":
+        session = cls.from_browser(cookies)
+        session.endpoint = endpoint
+        return session
 
     @classmethod
     def from_json(cls, value: dict) -> "Session":
@@ -101,6 +106,7 @@ class Session:
             cookies=[_compact_cookie(cookie) for cookie in cookies],
             saved_at=value.get("saved_at", ""),
             endpoint=value.get("endpoint"),
+            browser=value.get("browser"),
         )
 
     def to_json(self) -> dict:
@@ -108,6 +114,7 @@ class Session:
             "version": 1,
             "saved_at": self.saved_at,
             "endpoint": self.endpoint,
+            "browser": self.browser,
             "cookies": self.cookies,
         }
 
@@ -267,91 +274,99 @@ async def ensure_learningx_token(session: Session) -> Session:
     return session
 
 
-async def harvest_cdp(endpoint: str | None = None) -> list[dict]:
-    """Read cookies from a local Chromium DevTools endpoint (including HttpOnly)."""
-    endpoint = validate_endpoint(
-        endpoint or os.getenv("ECLASS_CDP_ENDPOINT", "http://127.0.0.1:9222")
-    ).rstrip("/")
-    parsed = urlsplit(endpoint)
-    if parsed.scheme in ("ws", "wss"):
-        endpoint = ("https" if parsed.scheme == "wss" else "http") + "://" + parsed.netloc
+def chrome_profile_dir() -> Path:
+    override = os.getenv("ECLASS_CHROME_PROFILE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".cau-eclass" / "chrome-profile"
+
+
+def _cookie_files(profile: Path) -> list[Path]:
+    directories = [profile / "Default"]
     try:
-        async with httpx.AsyncClient(timeout=8, trust_env=False) as client:
-            response = await client.get(endpoint + "/json/version")
-            response.raise_for_status()
-            websocket_url = response.json()["webSocketDebuggerUrl"]
-    except (httpx.HTTPError, KeyError, ValueError):
+        directories.extend(
+            child for child in profile.iterdir()
+            if child.is_dir() and child.name.startswith("Profile ")
+        )
+    except OSError:
+        pass
+    return [
+        path for directory in directories
+        for path in (directory / "Network" / "Cookies", directory / "Cookies")
+        if path.is_file()
+    ]
+
+
+def read_browser_cookies(profile: Path, browser_id: str = "chrome") -> list[dict]:
+    """Read cookies from a Chrome profile database without remote debugging."""
+    try:
+        import browser_cookie3
+    except ImportError:
+        raise EClassError("Chrome cookie import needs the browser-cookie3 package") from None
+    reader = getattr(browser_cookie3, browser_id, None)
+    if reader is None:
+        raise EClassError(f"Unsupported browser cookie reader: {browser_id}")
+    files = _cookie_files(profile)
+    if not files:
         raise EClassError(
-            "Cannot reach the local Chromium debugging port; start the login browser first"
-        ) from None
+            f"Chrome profile cookie store was not found in {profile}; sign in once first"
+        )
+    cookies: list[dict] = []
+    last_error = None
+    for path in files:
+        try:
+            jar = reader(cookie_file=str(path))
+        except Exception as error:
+            last_error = error
+            continue
+        for cookie in jar:
+            cookies.append(
+                {
+                    "name": cookie.name,
+                    "value": cookie.value,
+                    "domain": cookie.domain,
+                    "path": cookie.path or "/",
+                    "expires": cookie.expires,
+                    "secure": cookie.secure,
+                    "httpOnly": cookie.has_nonstandard_attr("HttpOnly"),
+                    "sameSite": getattr(cookie, "_rest", {}).get("SameSite"),
+                }
+            )
+    if cookies:
+        return cookies
+    raise EClassError(
+        "Chrome profile cookie store could not be read; close Chrome if it is locking the profile"
+    ) from last_error
 
-    from websockets.asyncio.client import connect
 
-    try:
-        async with connect(websocket_url, max_size=8 * 1024 * 1024, open_timeout=8) as socket:
-            await socket.send(json.dumps({"id": 1, "method": "Storage.getCookies", "params": {}}))
-            while True:
-                message = json.loads(await asyncio.wait_for(socket.recv(), timeout=10))
-                if message.get("id") != 1:
-                    continue
-                if message.get("error"):
-                    raise EClassError("Chromium did not return its cookie store")
-                cookies = message.get("result", {}).get("cookies", [])
-                if not isinstance(cookies, list):
-                    raise EClassError("Chromium returned an invalid cookie store")
-                return cookies
-    except EClassError:
-        raise
-    except Exception:
-        # WebSocket errors can include the debugging URL; keep the message generic.
-        raise EClassError("Could not read cookies from the local Chromium debugging port") from None
-
-
-async def login_via_cdp(
-    endpoint: str | None = None,
-    timeout: float = 300,
-    interval: float = 2,
-    wait_for_browser: bool = True,
+async def login_from_profile(
+    profile: Path, browser_id: str = "chrome", timeout: float = 300, interval: float = 2
 ) -> Session:
-    """Wait for a human browser login, then snapshot its cookies."""
-    endpoint = validate_endpoint(
-        endpoint or os.getenv("ECLASS_CDP_ENDPOINT", "http://127.0.0.1:9222")
-    ).rstrip("/")
+    """Wait for a human login in the dedicated profile, then snapshot its cookies."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(1, timeout)
     last_error: EClassError | None = None
     while loop.time() < deadline:
         try:
-            cookies = await harvest_cdp(endpoint)
-            session = Session.from_cdp(cookies, endpoint=endpoint)
+            session = Session.from_browser(read_browser_cookies(profile, browser_id), browser_id)
             if await verify_session(session):
                 await ensure_learningx_token(session)
                 return session
             last_error = SessionExpired("The browser is not logged in to e-Class yet")
-        except SessionExpired as error:
-            last_error = error
         except EClassError as error:
-            if not wait_for_browser and "Cannot reach" in str(error):
-                raise
             last_error = error
         await asyncio.sleep(max(0.2, interval))
     reason = str(last_error) if last_error else "login was not completed"
     raise EClassError(f"Login was not detected ({reason}); run `eclass-mcp login` again") from None
 
 
-async def refresh_session(endpoint: str | None = None, path: Path | None = None) -> Session:
-    """Reuse an already open login browser; fail immediately when it is absent."""
-    endpoint = validate_endpoint(
-        endpoint or os.getenv("ECLASS_CDP_ENDPOINT", "http://127.0.0.1:9222")
-    ).rstrip("/")
-    cookies = await harvest_cdp(endpoint)
-    session = Session.from_cdp(cookies, endpoint=endpoint)
+async def refresh_from_profile(
+    profile: Path, browser_id: str = "chrome", path: Path | None = None
+) -> Session:
+    """Reuse cookies from an already signed-in Chrome profile."""
+    session = Session.from_browser(read_browser_cookies(profile, browser_id), browser_id)
     if not await verify_session(session):
-        raise SessionExpired("The open browser is not logged in to e-Class")
+        raise SessionExpired("The Chrome profile is not logged in to e-Class")
     await ensure_learningx_token(session)
     save_session(session, path)
     return session
-
-
-def session_endpoint() -> str:
-    return validate_endpoint(os.getenv("ECLASS_CDP_ENDPOINT", "http://127.0.0.1:9222"))

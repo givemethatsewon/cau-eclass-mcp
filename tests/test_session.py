@@ -93,3 +93,38 @@ def test_merge_cookies_keeps_only_cau_domains():
 
 def test_session_expired_is_transport_error():
     assert issubclass(SessionExpired, EClassError)
+
+
+def test_browser_cookie_import_without_cdp(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import browser_cookie3
+
+    from eclass_mcp.session import read_browser_cookies
+
+    profile = tmp_path / "chrome-profile"
+    cookie_file = profile / "Default" / "Cookies"
+    cookie_file.parent.mkdir(parents=True)
+    cookie_file.write_bytes(b"synthetic")
+    cookie = SimpleNamespace(
+        name="sid",
+        value="synthetic",
+        domain=".cau.ac.kr",
+        path="/",
+        expires=None,
+        secure=True,
+        _rest={"SameSite": "Lax"},
+    )
+    cookie.has_nonstandard_attr = lambda name: name == "HttpOnly"
+    monkeypatch.setattr(browser_cookie3, "chrome", lambda cookie_file: [cookie])
+    cookies = read_browser_cookies(profile, "chrome")
+    assert cookies[0]["name"] == "sid"
+    assert cookies[0]["httpOnly"] is True
+    assert cookies[0]["sameSite"] == "Lax"
+
+
+def test_missing_chrome_profile_is_actionable(tmp_path):
+    from eclass_mcp.session import read_browser_cookies
+
+    with pytest.raises(EClassError, match="sign in"):
+        read_browser_cookies(tmp_path / "missing", "chrome")

@@ -8,8 +8,8 @@ Target: `rust/src` (`eclass_core` library + `eclass-mcp-rs` binary).
 | Python | Rust |
 |---|---|
 | `session.Session` / `Cookie` | `session::Session` / `session::Cookie` |
-| `session.harvest_cdp` | `session::harvest_cdp` |
-| `session.login_via_cdp` | `session::login_via_cdp` |
+| `session.read_browser_cookies` | `session::read_browser_cookies` |
+| `session.login_from_profile` | `session::login_from_profile` |
 | `session.refresh_session` | `session::refresh_session` |
 | `session.save_session` / `load_session` | same names in `session` |
 | `http.HTTPTransport` | `http::HttpTransport` |
@@ -32,7 +32,7 @@ Target: `rust/src` (`eclass_core` library + `eclass-mcp-rs` binary).
 | `tests/test_catalog.py` | `src/catalog.rs` unit tests |
 | `tests/test_briefing.py` | `tests/service.rs` briefing test |
 | `tests/test_materials.py` | `tests/service.rs` Commons PDF test |
-| `tests/test_cdp_browser.py` | no direct Rust test; CDP harvest was manually checked with Chromium |
+| `tests/test_cdp_browser.py` | no direct Rust test; Chrome profile cookie import was manually checked with a temporary profile |
 | PDF page text | `tests/pdf.rs` with `tests/fixtures/sample.pdf` |
 
 ## Deliberate differences
@@ -45,9 +45,9 @@ Target: `rust/src` (`eclass_core` library + `eclass-mcp-rs` binary).
   without applying week/query/type filters.** The compact/default path is fully
   ported; this legacy detail path is intentionally left unfiltered in the
   experimental Rust core.
-- **Only HTTP transport is available.** `ECLASS_BROWSER=aside|cdp` remains a
-  Python feature. Rust still uses CDP for the one-time `login` and session
-  refresh.
+- **Only HTTP transport is available.** `ECLASS_BROWSER=aside` remains a Python
+  feature. Rust reads Chrome profile cookies for the one-time `login` and
+  session refresh; no remote debugging port is opened.
 - **MCP protocol version is `2024-11-05`.** The FastMCP Python client accepted
   the Rust server and listed all 27 tools. Rust adds
   `get_onboarding_status` to the Python 26-tool surface.

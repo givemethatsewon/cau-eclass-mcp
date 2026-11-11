@@ -57,7 +57,7 @@ python scripts/benchmark_server.py --label aside --runs 3 \
 | 항목 | 0.3.0 | 0.4.0 |
 |---|---|---|
 | 핵심 설정 단계 | 5~6단계 | **3단계** |
-| 설치 | `[cdp]` + Playwright | 기본 설치 |
+| 설치 | `[browser]` + Playwright | 기본 설치 |
 | 브라우저 실행 | 전용 프로필 + 디버깅 플래그 | `eclass-mcp login`이 대신 실행 |
 | 로그인 후 | e-Class 탭 유지 | 브라우저를 닫아도 조회·다운로드 가능 |
 | 실행 중 브라우저 | 필수(Aside 또는 CDP) | 일반 조회·다운로드에는 불필요 |

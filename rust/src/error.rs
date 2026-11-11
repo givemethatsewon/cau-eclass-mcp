@@ -63,14 +63,14 @@ pub enum EclassError {
     InvalidSession,
     #[error("no saved e-Class session; run `eclass-mcp login` once")]
     NoSession,
-    #[error("cannot reach the local Chromium debugging port; start the login browser first")]
-    CdpUnavailable,
-    #[error("Chromium did not return its cookie store")]
-    CdpProtocol,
+    #[error("Chrome profile cookie store was not found; sign in once in the dedicated profile")]
+    BrowserProfileUnavailable,
+    #[error(
+        "Chrome profile cookie store could not be read; close Chrome if it is locking the profile"
+    )]
+    CookieStoreUnavailable,
     #[error("the browser is not logged in to e-Class yet")]
     NotLoggedIn,
-    #[error("invalid CDP endpoint: only localhost or a loopback address is allowed")]
-    InvalidEndpoint,
     #[error("browser executable was not found; pass --browser-path")]
     BrowserNotFound,
     #[error("response exceeds the read limit")]
@@ -102,11 +102,5 @@ pub enum EclassError {
 impl From<reqwest::Error> for EclassError {
     fn from(_: reqwest::Error) -> Self {
         Self::Network
-    }
-}
-
-impl From<tokio_tungstenite::tungstenite::Error> for EclassError {
-    fn from(_: tokio_tungstenite::tungstenite::Error) -> Self {
-        Self::CdpProtocol
     }
 }

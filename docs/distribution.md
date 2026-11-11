@@ -13,7 +13,7 @@
 ## 로컬 릴리스 만들기
 
 ```sh
-uv sync --frozen --extra cdp
+uv sync --frozen --extra browser
 uv run pytest -q
 uv run ruff check src tests scripts
 uv build --no-sources
@@ -32,7 +32,7 @@ eclass-mcp config --client claude
 eclass-mcp skill
 ```
 
-계획서 OZ PDF나 레거시 CDP까지 쓸 때만 `--with 'playwright>=1.60,<2'`를 추가합니다. 패키지를 다시 설치하거나 위치를 변경했다면 `config` 출력을 다시 생성하세요. 출력되는 Python 경로는 설치된 가상환경의 절대 경로입니다. 임시 `uvx` 환경의 경로를 장기 설정에 넣지 않도록, 설정 생성에는 영구 `uv tool install` 또는 checkout의 `.venv`를 사용하세요.
+계획서 OZ PDF나 제출 브라우저 도우미까지 쓸 때만 `--with 'playwright>=1.60,<2'`를 추가합니다. 패키지를 다시 설치하거나 위치를 변경했다면 `config` 출력을 다시 생성하세요. 출력되는 Python 경로는 설치된 가상환경의 절대 경로입니다. 임시 `uvx` 환경의 경로를 장기 설정에 넣지 않도록, 설정 생성에는 영구 `uv tool install` 또는 checkout의 `.venv`를 사용하세요.
 
 ## 게시 설정
 
@@ -57,4 +57,4 @@ PyPI 계정 생성·이메일 인증·2FA 설정 후 [Publishing](https://pypi.o
 
 2026-10-26에 `0.2.0`을 PyPI에 게시했습니다. PyPI 직접 설치 후 버전·번들 스킬·생성 설정의 실행·doctor 실패 계약을 검증했고, PyPI의 wheel/sdist SHA256과 GitHub Actions 산출물이 일치함을 확인했습니다. 비상업 라이선스 메타데이터도 확인했습니다. MCP Registry는 아직 등록하지 않았습니다.
 
-패키지명과 실행 명령이 다르므로 일회성 실행은 `uvx --from 'cau-eclass-mcp[cdp]==0.4.0' eclass-mcp --version`처럼 사용합니다. 장기 MCP 설정 생성에는 위의 `uv tool install`을 사용하세요.
+패키지명과 실행 명령이 다르므로 일회성 실행은 `uvx --from 'cau-eclass-mcp[browser]==0.4.0' eclass-mcp --version`처럼 사용합니다. 장기 MCP 설정 생성에는 위의 `uv tool install`을 사용하세요.

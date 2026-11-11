@@ -5,7 +5,7 @@ README·CHANGELOG·CONTRIBUTING·SECURITY 및 `docs/`만 변경한 push/PR은 CI
 Python 3.12 이상과 uv를 사용합니다.
 
 ```sh
-uv sync --frozen --extra cdp
+uv sync --frozen --extra browser
 uv run pytest -q
 uv run ruff check src tests scripts
 uv build --no-sources

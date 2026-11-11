@@ -17,10 +17,10 @@ Python이 런타임에 반드시 필요한 로직은 없다. 남은 것은 언�
 | 최대 RSS | 약 106 MiB | **약 10.5 MiB** |
 | 유휴 RSS | 약 106~111 MiB | **약 9.6 MiB** |
 | 프로세스 수 | 1 | 1 |
-| 릴리스 바이너리 | wheel + Python 환경 | **약 14 MiB 단일 실행 파일** |
+| 릴리스 바이너리 | wheel + Python 환경 | **약 16 MiB 단일 실행 파일** |
 
 대략 **시작 18~21배**, **메모리 약 90~91% 감소**다. Rust는 읽기·다운로드에
-브라우저 프로세스를 띄우지 않는다. Python CDP 경로는 외부 Chrome 트리
+브라우저 프로세스를 띄우지 않는다. Python 브라우저 모드는 외부 Chrome 트리
 약 674 MiB/7개 프로세스가 추가로 필요했다.
 
 같은 `scripts/benchmark_server.py` 하네스, 가짜 세션, 실제 학교 네트워크
@@ -29,7 +29,7 @@ Python이 런타임에 반드시 필요한 로직은 없다. 남은 것은 언�
 
 이식 범위:
 
-- 세션 파일 호환, CDP `Storage.getCookies` 수집, HttpOnly 쿠키
+- 세션 파일 호환, Chrome 프로필 쿠키 수집, HttpOnly 쿠키
 - HTTP GET·리다이렉트·페이지네이션·TTL 캐시·single-flight
 - 강좌·todo·briefing·주차자료·공지·과제·마감·게시판·그룹
 - Commons PDF/영상, Canvas 파일 다운로드
@@ -47,17 +47,17 @@ Python이 런타임에 반드시 필요한 로직은 없다. 남은 것은 언�
 | FastMCP 서버 | 작은 stdio JSON-RPC 서버 |
 | `httpx` 전송 | `reqwest` |
 | `asyncio` 병렬 briefing | `tokio` + `buffer_unordered(4)` |
-| 세션/CDP 수집 | `tokio-tungstenite` + `Storage.getCookies` |
+| 세션 수집 | `rookie-cookies` Chrome 프로필 쿠키 |
 | 카탈로그·필터 | 순수 Rust 모듈 + 단위 테스트 |
 
 남은 두 기능은 **Python 언어에 묶인 것이 아니라 브라우저 UI에 묶여 있다.**
 
 1. **OZ 계획서 PDF 내보내기**: OZ 뷰어의 Save 대화상자와 브라우저 다운로드
-   이벤트를 조작해야 한다. Rust에서는 `chromiumoxide`/CDP로 포팅할 수 있다.
+   이벤트를 조작해야 한다. Rust에서는 브라우저 자동화로 포팅할 수 있다.
 2. **과제 준비·제출**: Canvas 업로드 티켓, CSRF, 재제출, 불명확한 결과 처리.
-   Rust에서도 HTTP/CDP로 가능하지만 실계정 검증과 안전 경계가 필요하다.
+   Rust에서도 HTTP/브라우저 자동화로 가능하지만 실계정 검증과 안전 경계가 필요하다.
 
-즉, 둘을 Rust CDP로 옮기면 Python을 완전히 제거할 수 있다. 당장 무리하지
+즉, 둘을 Rust 브라우저 자동화로 옮기면 Python을 완전히 제거할 수 있다. 당장 무리하지
 않는다면 Rust 코어 + 작은 브라우저 도우미(Python 또는 별도 바이너리)로
 나누는 것이 안전하다.
 
@@ -98,7 +98,7 @@ e-Class에는 OAuth식 scope 동의가 없다. 온보딩은 **로그인 세션, 
 `eclass-mcp onboard --client claude`:
 
 1. 전용 Chromium 프로필을 열고 사용자가 직접 로그인한다.
-2. `Storage.getCookies`로 세션을 저장한다.
+2. Chrome 프로필 쿠키 DB를 읽어 세션을 저장한다.
 3. 프로필 API, LearningX 토큰, 강좌 목록을 확인한다.
 4. `schema_version`, `session_state`, `authenticated`, `learningx_token`,
    `courses_visible`, `ready`, `next_actions`를 JSON으로 출력한다.
@@ -123,10 +123,10 @@ e-Class에는 OAuth식 scope 동의가 없다. 온보딩은 **로그인 세션, 
 내용을 절대 포함하지 않으며, 이를 직렬화 테스트로 고정했다.
 
 LearningX 토큰은 `login`/`onboard`가 `/learningx/main` HTTP 요청 후에도
-없으면, CDP로 로그인 브라우저에 `learningx/main` 탭을 열고
-`Storage.getCookies`를 10초간 폴링한 뒤 탭을 닫는다. 자동화가 실패하면
-`OPEN_WEEKLY_LEARNING` 액션으로 남겨 사용자가 **주차학습 (모듈)** 화면을
-한 번 열고 `login --no-launch`를 실행하도록 안내한다.
+없으면, 전용 Chrome 프로필로 `learningx/main` 탭을 열고 쿠키 DB를 잠시
+폴링한다. 자동화가 실패하면 `OPEN_WEEKLY_LEARNING` 액션으로 남겨 사용자가
+**주차학습 (모듈)** 화면을 한 번 열고 `login --no-launch`를 실행하도록
+안내한다.
 
 세션 파일 위치는 macOS `~/Library/Application Support/cau-eclass/session.json`,
 Linux `${XDG_CONFIG_HOME:-~/.config}/cau-eclass/session.json`, Windows
@@ -157,7 +157,7 @@ Go도 여전히 가능하지만, Rust 구현이 이미 동작하고 측정까지
    에이전트 온보딩 흐름을 검증한다.
 4. 실제 사용자 피드백을 본 뒤 macOS 서명·notarization, 그다음 Windows
    서명 투자 여부를 결정한다.
-5. OZ PDF를 Rust CDP로 포팅하고, 제출은 실계정 검증 후 별도 단계로 둔다.
+5. OZ PDF를 Rust 브라우저 자동화로 포팅하고, 제출은 실계정 검증 후 별도 단계로 둔다.
 6. Rust가 primary가 되면 Python 패키지는 레거시/브라우저 도우미로 축소한다.
 
 두 개의 완전한 구현을 장기간 유지하지 않는다. Rust를 primary로 정하고,

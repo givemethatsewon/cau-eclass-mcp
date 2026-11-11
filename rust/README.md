@@ -6,7 +6,7 @@ port can be evaluated without destabilizing `0.4.0`.
 
 ## Status
 
-- **Ported:** session loading, CDP cookie harvesting, HTTP GET/pagination,
+- **Ported:** session loading, Chrome profile cookie import, HTTP GET/pagination,
   TTL cache with one loader per key, course/todo/briefing, weekly materials,
   Commons PDF and video downloads, Canvas files, assignments/deadlines,
   announcements, syllabus text, boards, groups, PDF validation/page text, and
@@ -14,8 +14,8 @@ port can be evaluated without destabilizing `0.4.0`.
 - **Python/browser only:** OZ native PDF export (`download_syllabus_pdf`) and
   assignment preparation/submission. The Rust tools return a clear
   `BrowserOnly` error for these.
-- **Not ported:** the legacy `aside`/`cdp` transport switch. Rust always uses
-  the saved HTTP session; `login` is the only browser step.
+- **Not ported:** the legacy `aside` transport switch. Rust always uses the
+  saved HTTP session; `login` is the only browser step.
 
 ## Build and run
 
@@ -102,8 +102,8 @@ initialize, and one tool listing; CPU is user+system from `/usr/bin/time -l`.
 | Rust core | **~0.03 s** | **<0.01 s** | **~10.5 MiB** | **~9.6 MiB** | 1 |
 
 Approximate improvement: **18–21× faster startup**, **~90–91% less memory**,
-and a **14 MiB single release binary**. The Rust server spawns no browser for
-reads/downloads; the Python CDP path required an external Chrome tree (about
+and a **16 MiB single release binary**. The Rust server spawns no browser for
+reads/downloads; the Python browser mode required an external Chrome tree (about
 674 MiB / 7 processes in the local test).
 
 These are harness measurements, not real e-Class latency. Network time
@@ -113,7 +113,7 @@ fonts/layouts.
 
 ## Design notes
 
-- `session.rs` owns the compatible session format and CDP harvesting.
+- `session.rs` owns the compatible session format and Chrome profile cookie import.
 - `http.rs` owns redirects, cookie scoping, downloads and the TTL cache.
 - `catalog.rs` is a pure port of the material/week filters.
 - `documents.rs` uses `lopdf` for page-by-page text; extraction can differ
@@ -127,7 +127,7 @@ fonts/layouts.
 For the core read/download path, **yes**. Nothing there needs Python at
 runtime:
 
-- session/cookie handling, CDP harvesting, HTTP, pagination, cache, catalog,
+- session/cookie handling, Chrome profile cookie import, HTTP, pagination, cache, catalog,
   briefing, PDF validation/text and MCP stdio all have Rust implementations.
 - `pypdf` is replaced by `lopdf`; the fixture and integration tests cover the
   normal page-text path.
@@ -141,7 +141,7 @@ The only remaining browser-bound features are:
    verified write boundary.
 
 Those are **not Python-language requirements**; they are browser UI flows. They
-can be ported to Rust with CDP (for example `chromiumoxide`) or kept as a small
+can be ported to Rust with browser automation or kept as a small
 browser helper while the Rust core handles everything else. The safe staging is
 to ship Rust for reads/downloads first, then port OZ/submission only after
 real-account verification.
