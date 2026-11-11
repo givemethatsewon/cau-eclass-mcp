@@ -77,5 +77,5 @@ cargo test
 cargo build --release
 ```
 
-Results at the time of writing: 20 unit tests, 2 PDF integration tests, 5
+Results at the time of writing: 20 unit tests, 2 PDF integration tests, 6
 service integration tests, clippy clean, release build successful.

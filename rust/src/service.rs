@@ -96,12 +96,21 @@ impl EClassService {
 
     /// Current-user session status.
     pub async fn session_status(&self) -> Result<Value, EclassError> {
+        if !self.transport.has_session() {
+            return Ok(json!({
+                "authenticated": false,
+                "session_state": "missing",
+                "submission_enabled": self.enable_submission,
+                "transport": "http"
+            }));
+        }
         let user = self.get("/api/v1/users/self/profile", false, false).await?;
         if user.get("id").is_none() {
             return Err(EclassError::NoProfile);
         }
         Ok(json!({
             "authenticated": true,
+            "session_state": "authenticated",
             "user": select(&user, &["id", "name"]),
             "submission_enabled": self.enable_submission,
             "transport": "http"
@@ -110,6 +119,23 @@ impl EClassService {
 
     /// Structured first-run status for an agent guiding the user.
     pub async fn onboarding_status(&self) -> Value {
+        if !self.transport.has_session() {
+            return json!({
+                "schema_version": 1,
+                "session_state": "missing",
+                "authenticated": false,
+                "learningx_token": false,
+                "courses_visible": null,
+                "ready": false,
+                "next_actions": [action(
+                    "RUN_ONBOARD",
+                    "Sign in to e-Class once in the dedicated browser.",
+                    Some("eclass-mcp onboard --client <client>")
+                )],
+                "session_file": self.transport.session_file(),
+                "error": null
+            });
+        }
         let session = self.transport.session();
         let (authenticated, auth_error) = match self.session_status().await {
             Ok(status) => (

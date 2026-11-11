@@ -142,6 +142,21 @@ async fn onboarding_status_reports_ready() {
 }
 
 #[tokio::test]
+async fn missing_session_can_still_report_onboarding() {
+    let path = tempfile::tempdir().unwrap().path().join("missing.json");
+    let transport = HttpTransport::from_session(Some(path), None).unwrap();
+    assert!(!transport.has_session());
+    let service = EClassService::new(Arc::new(transport), None, false);
+    let status = service.onboarding_status().await;
+    assert_eq!(status["session_state"], "missing");
+    let actions = status["next_actions"].as_array().unwrap();
+    assert!(actions.iter().any(|action| action["code"] == "RUN_ONBOARD"));
+    let session = service.session_status().await.unwrap();
+    assert_eq!(session["authenticated"], false);
+    assert_eq!(session["session_state"], "missing");
+}
+
+#[tokio::test]
 async fn onboarding_reports_expired_session_without_secrets() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

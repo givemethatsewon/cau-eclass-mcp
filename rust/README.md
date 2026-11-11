@@ -55,6 +55,11 @@ The session file is the same one used by the Python build: macOS
 is written `0600`; `eclass-mcp logout` deletes it. It is a bearer credential,
 so never sync or share it.
 
+The MCP server can start with **no saved session**. In that state
+`get_onboarding_status` returns `session_state=missing` and the other tools
+return a login-required error, so an agent can guide the first run from inside
+the MCP client instead of failing at startup.
+
 ## Distribution
 
 The intended user path is **GitHub Releases**, not a local Rust install:

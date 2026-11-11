@@ -92,6 +92,7 @@ async fn handle_request(service: &EClassService, request: Value) -> Option<Value
             match call_tool(service, name, &arguments).await {
                 Ok(value) => Ok(json!({
                     "content": [{"type": "text", "text": serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())}],
+                    "structuredContent": value,
                     "isError": false
                 })),
                 Err(error) => Ok(json!({

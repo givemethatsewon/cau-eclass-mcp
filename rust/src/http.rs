@@ -3,7 +3,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -95,6 +98,7 @@ pub struct HttpTransport {
     cache: TtlCache,
     auto_refresh: bool,
     allowed_hosts: HashSet<String>,
+    has_session: AtomicBool,
 }
 
 impl HttpTransport {
@@ -126,39 +130,44 @@ impl HttpTransport {
                 .iter()
                 .map(|host| (*host).to_string())
                 .collect(),
+            has_session: AtomicBool::new(true),
         })
     }
 
     /// Load the session from `ECLASS_SESSION_FILE` and use the production origin.
     ///
-    /// # Errors
-    ///
-    /// Returns [`EclassError::NoSession`] when no session file exists.
+    /// A missing file still yields a transport so the MCP server can start and
+    /// answer `get_onboarding_status`; other tools will report a missing session.
     pub fn from_env() -> Result<Self, EclassError> {
         Self::from_session(None, None)
     }
 
     /// Load a session from an explicit path or the environment, with an optional CDP override.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EclassError::NoSession`] when no session file exists.
     pub fn from_session(
         path: Option<PathBuf>,
         endpoint: Option<String>,
     ) -> Result<Self, EclassError> {
         let path = path.unwrap_or_else(default_session_file);
-        let session = load_session(&path)?.ok_or(EclassError::NoSession)?;
+        let loaded = load_session(&path)?;
+        let has_session = loaded.is_some();
+        let session = loaded.unwrap_or_else(|| Session::from_cdp(Vec::new(), None));
         let ttl = std::env::var("ECLASS_CACHE_TTL")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(20);
         let mut transport =
             Self::new(session, path, Url::parse(ORIGIN)?, Duration::from_secs(ttl))?;
+        transport.has_session.store(has_session, Ordering::Relaxed);
         if let Some(endpoint) = endpoint {
             transport.endpoint = Some(endpoint);
         }
         Ok(transport)
+    }
+
+    /// Whether a session file was loaded (it may still be expired).
+    #[must_use]
+    pub fn has_session(&self) -> bool {
+        self.has_session.load(Ordering::Relaxed)
     }
 
     /// The saved session, cloned for read-only inspection.
@@ -193,6 +202,7 @@ impl HttpTransport {
             .session
             .lock()
             .map_err(|_| EclassError::InvalidSession)? = session;
+        self.has_session.store(true, Ordering::Relaxed);
         self.cache.clear().await;
         Ok(())
     }

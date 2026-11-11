@@ -109,9 +109,11 @@ e-Class에는 OAuth식 scope 동의가 없다. 온보딩은 **로그인 세션, 
 | `CONFIGURE_CLIENT` | 준비 완료, 클라이언트 설정 단계 |
 
 `session_state`는 `missing`, `expired`, `unavailable`, `authenticated`를
-구분한다. 단순히 `authenticated=false`로 뭉개지 않는다. MCP의
-`get_onboarding_status`도 같은 스키마를 반환하며, 쿠키 값·Bearer 토큰·세션
-파일 내용은 절대 포함하지 않는다. 이를 직렬화 테스트로 고정했다.
+구분한다. 단순히 `authenticated=false`로 뭉개지 않는다. MCP 서버는 세션이
+없어도 시작하며, 이 상태에서 `get_onboarding_status`가 `missing`을 반환하고
+다른 도구는 로그인 필요 오류를 낸다. 따라서 MCP 클라이언트 안에서도 첫 실행
+안내가 가능하다. `get_onboarding_status`는 쿠키 값·Bearer 토큰·세션 파일
+내용을 절대 포함하지 않으며, 이를 직렬화 테스트로 고정했다.
 
 LearningX 토큰은 `login`/`onboard`가 `/learningx/main` HTTP 요청 후에도
 없으면, CDP로 로그인 브라우저에 `learningx/main` 탭을 열고
