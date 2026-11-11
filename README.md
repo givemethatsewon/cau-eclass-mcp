@@ -12,7 +12,7 @@
 | 시작 | **약 0.03초** | 약 0.58초 |
 | 유휴 메모리 | **약 9.6 MiB** | 약 106~111 MiB |
 | 브라우저 | 로그인할 때만 | 로그인 + OZ PDF·제출 |
-| 범위 | 읽기·다운로드·PDF 텍스트 | OZ PDF·과제 제출까지 |
+| 범위 | 읽기·다운로드·PDF 텍스트·제출(HTTP) | OZ PDF·과제 제출 |
 | 도구 | 27개 | 26개 |
 
 > Rust 코어는 현재 실험 단계입니다. OZ PDF 내보내기와 실제 과제 제출은 Python/브라우저 경로를 사용합니다.
@@ -79,7 +79,7 @@ uv sync --frozen
 uv run eclass-mcp --help
 ```
 
-계획서 OZ PDF 내보내기와 실제 과제 제출을 쓸 때만 Playwright가 필요합니다.
+계획서 OZ PDF 내보내기를 쓸 때만 Playwright가 필요합니다.
 
 ```sh
 uv tool install --python 3.12 'cau-eclass-mcp[browser]==0.4.0'
@@ -167,7 +167,7 @@ Rust 코어는 세션이 없어도 MCP 서버가 시작됩니다. 에이전트�
 - 20초 TTL 캐시와 단일 비행(single-flight)으로 같은 주차·과목 응답을 반복 요청하지 않습니다. `ECLASS_CACHE_TTL=0`으로 끌 수 있습니다.
 - `get_briefing`은 과목 공지를 최대 4개씩 병렬로 읽어 한 번에 요약합니다.
 - 세션이 만료되면 열려 있는 로그인 브라우저에서 자동으로 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`).
-- OZ 계획서 PDF 내보내기와 실제 과제 제출만 기존 브라우저 경로를 사용합니다.
+- OZ 계획서 PDF만 브라우저 경로를 사용합니다. 과제 제출은 Canvas HTTP 업로드로 Rust에서도 동작합니다.
 
 ## 브라우저 프로필
 

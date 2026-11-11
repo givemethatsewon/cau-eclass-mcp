@@ -9,11 +9,11 @@ port can be evaluated without destabilizing `0.4.0`.
 - **Ported:** session loading, Chrome profile cookie import, HTTP GET/pagination,
   TTL cache with one loader per key, course/todo/briefing, weekly materials,
   Commons PDF and video downloads, Canvas files, assignments/deadlines,
-  announcements, syllabus text, boards, groups, PDF validation/page text, and
-  27 MCP tool schemas (the Python 26 plus `get_onboarding_status`).
-- **Python/browser only:** OZ native PDF export (`download_syllabus_pdf`) and
-  assignment preparation/submission. The Rust tools return a clear
-  `BrowserOnly` error for these.
+  announcements, syllabus text, boards, groups, PDF validation/page text,
+  Canvas upload/submission over HTTP, and 27 MCP tool schemas (the Python 26
+  plus `get_onboarding_status`).
+- **Python/browser only:** OZ native PDF export (`download_syllabus_pdf`).
+  The Rust tool returns a clear `BrowserOnly` error for it.
 - **Not ported:** the legacy `aside` transport switch. Rust always uses the
   saved HTTP session; `login` is the only browser step.
 

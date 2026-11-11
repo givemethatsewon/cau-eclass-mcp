@@ -13,17 +13,30 @@ use wiremock::{
 
 fn session() -> Session {
     Session::from_cdp(
-        vec![Cookie {
-            name: "xn_api_token".to_string(),
-            value: "synthetic".to_string(),
-            domain: ".cau.ac.kr".to_string(),
-            path: "/".to_string(),
-            expires: None,
-            secure: false,
-            http_only: true,
-            same_site: None,
-            host_only: None,
-        }],
+        vec![
+            Cookie {
+                name: "xn_api_token".to_string(),
+                value: "synthetic".to_string(),
+                domain: ".cau.ac.kr".to_string(),
+                path: "/".to_string(),
+                expires: None,
+                secure: false,
+                http_only: true,
+                same_site: None,
+                host_only: None,
+            },
+            Cookie {
+                name: "_csrf_token".to_string(),
+                value: "csrf-token".to_string(),
+                domain: ".cau.ac.kr".to_string(),
+                path: "/".to_string(),
+                expires: None,
+                secure: false,
+                http_only: true,
+                same_site: None,
+                host_only: None,
+            },
+        ],
         None,
     )
 }
@@ -236,4 +249,83 @@ async fn commons_pdf_download_and_read_reuse_file() {
         .unwrap();
     assert!(read["pages"][0]["text"].as_str().unwrap().contains("Alpha"));
     assert!(read["document_complete"].as_bool().unwrap());
+}
+
+#[tokio::test]
+async fn submission_uses_http_upload_and_verifies_readback() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/self/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7, "name": "Fixture"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/courses/1/assignments/2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 2,
+            "name": "Project",
+            "submission_types": ["online_upload"],
+            "allowed_extensions": ["pdf"],
+            "allowed_attempts": 2,
+            "locked_for_user": false
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/courses/1/assignments/2/submissions/self"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attempt": 0,
+            "submitted_at": "2026-11-01T00:00:00Z",
+            "attachments": [{"id": 99}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/api/v1/courses/1/assignments/2/submissions/self/files",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "upload_url": format!("{}/upload", server.uri()),
+            "upload_params": {"key": "value"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/upload"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 99})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/courses/1/assignments/2/submissions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 123})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("work.pdf");
+    std::fs::write(&file, b"%PDF-1.7 synthetic").unwrap();
+    let transport = HttpTransport::new(
+        session(),
+        PathBuf::from("/tmp/rust-session.json"),
+        url::Url::parse(&server.uri()).unwrap(),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    let service = EClassService::new(
+        Arc::new(transport),
+        Some(directory.path().to_path_buf()),
+        true,
+    );
+    let plan = service
+        .prepare_submission(1, 2, &[file.to_string_lossy().to_string()])
+        .await
+        .unwrap();
+    assert_eq!(plan["ready"], true);
+    let result = service
+        .submit_assignment(plan["plan_id"].as_str().unwrap(), "SUBMIT 2")
+        .await
+        .unwrap();
+    assert_eq!(result["state"], "verified");
+    assert_eq!(result["submission"]["attachments"][0]["id"], 99);
 }

@@ -37,8 +37,10 @@ Target: `rust/src` (`eclass_core` library + `eclass-mcp-rs` binary).
 
 ## Deliberate differences
 
-- **Browser-only features are explicit errors.** OZ PDF export, submission
-  preparation, and actual submission stay in the Python/browser build.
+- **Browser-only feature is an explicit error.** OZ PDF export stays in the
+  Python/browser helper. Assignment preparation and submission are implemented
+  in Rust using Canvas HTTP upload tickets, CSRF, multipart upload and readback;
+  they still need real-account validation before routine use.
 - **PDF text uses `lopdf`.** Text extraction may differ from Python `pypdf` on
   unusual fonts or layouts. The fixture covers the normal text path.
 - **`list_learning_items(detail=true)` returns the raw provider modules
@@ -77,5 +79,5 @@ cargo test
 cargo build --release
 ```
 
-Results at the time of writing: 20 unit tests, 2 PDF integration tests, 6
+Results at the time of writing: 20 unit tests, 2 PDF integration tests, 7
 service integration tests, clippy clean, release build successful.

@@ -23,6 +23,7 @@ clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 hex = "0.4"
 html-escape = "0.3"
+mime_guess = "2"
 lopdf = { version = "0.47", default-features = false }
 percent-encoding = "2"
 regex = "1"
@@ -35,6 +36,7 @@ reqwest = { version = "0.13", default-features = false, features = [
     "brotli",
     "deflate",
     "charset",
+    "multipart",
 ] }
 scraper = "0.29"
 serde = { version = "1", features = ["derive"] }

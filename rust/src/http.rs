@@ -13,7 +13,7 @@ use std::{
 use futures_util::StreamExt;
 use regex::Regex;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::sync::Mutex as TokioMutex;
 use url::Url;
 
@@ -891,6 +891,160 @@ impl HttpTransport {
         }
         let target = template.replace("[MEDIA_FILE]", &files[0]);
         self.trusted_download(&target)
+    }
+
+    fn csrf_token(&self) -> Result<String, EclassError> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| EclassError::InvalidSession)?;
+        let raw = session
+            .token("_csrf_token")
+            .ok_or(EclassError::SessionExpired)?;
+        Ok(percent_encoding::percent_decode_str(raw)
+            .decode_utf8_lossy()
+            .into_owned())
+    }
+
+    async fn post_json(&self, path: &str, body: &Value) -> Result<Value, EclassError> {
+        let csrf = self.csrf_token()?;
+        let url = self.base.join(&local_path(path)?)?;
+        let headers = self.headers(path, false, false, &url);
+        let mut headers = headers;
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&csrf) {
+            headers.insert("x-csrf-token", value);
+        }
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        let response = self
+            .client
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(|_| EclassError::Network)?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(EclassError::SessionExpired);
+        }
+        if response.status().is_redirection() {
+            return Err(EclassError::BrowserOnly(
+                "upload finalization requires an unsupported redirect",
+            ));
+        }
+        if !response.status().is_success() {
+            return Err(EclassError::Http(response.status().as_u16()));
+        }
+        let bytes = response.bytes().await.map_err(|_| EclassError::Network)?;
+        if bytes.len() > MAX_JSON_BYTES {
+            return Err(EclassError::ResponseTooLarge);
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        serde_json::from_str(strip_canvas_prefix(&text)).map_err(|_| EclassError::ExpectedJson)
+    }
+
+    async fn upload_multipart(
+        &self,
+        upload_url: &str,
+        params: &Map<String, Value>,
+        filename: &str,
+        bytes: &[u8],
+        content_type: &str,
+    ) -> Result<Value, EclassError> {
+        let url = Url::parse(upload_url).or_else(|_| self.base.join(upload_url))?;
+        let same_base = url.host_str() == self.base.host_str()
+            && url.port_or_known_default() == self.base.port_or_known_default();
+        if !same_base
+            && (url.scheme() != "https" || !url.username().is_empty() || url.password().is_some())
+        {
+            return Err(EclassError::UntrustedHost);
+        }
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let mut form = reqwest::multipart::Form::new();
+        for (key, value) in params {
+            let text = match value {
+                Value::String(value) => value.clone(),
+                Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            form = form.text(key.clone(), text);
+        }
+        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str(content_type)
+            .map_err(|_| EclassError::InvalidPath)?;
+        form = form.part("file", part);
+        let response = client
+            .post(url)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|_| EclassError::Network)?;
+        if response.status().is_redirection() {
+            return Err(EclassError::BrowserOnly(
+                "upload finalization requires an unsupported redirect",
+            ));
+        }
+        if !response.status().is_success() {
+            return Err(EclassError::Http(response.status().as_u16()));
+        }
+        let text = response.text().await.map_err(|_| EclassError::Network)?;
+        serde_json::from_str(strip_canvas_prefix(&text)).map_err(|_| EclassError::ExpectedJson)
+    }
+
+    /// Create Canvas upload tickets, upload bytes, and post the submission.
+    pub async fn submit_files(
+        &self,
+        course_id: u32,
+        assignment_id: u32,
+        files: &[(String, Vec<u8>, String)],
+    ) -> Result<Value, EclassError> {
+        let mut file_ids = Vec::new();
+        for (name, bytes, content_type) in files {
+            let ticket = self
+                .post_json(
+                    &format!(
+                        "/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions/self/files"
+                    ),
+                    &json!({"name": name, "size": bytes.len(), "content_type": content_type}),
+                )
+                .await?;
+            let upload_url = ticket
+                .get("upload_url")
+                .and_then(Value::as_str)
+                .ok_or(EclassError::NotAFile)?;
+            let params = ticket
+                .get("upload_params")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let uploaded = self
+                .upload_multipart(upload_url, &params, name, bytes, content_type)
+                .await?;
+            let id = uploaded
+                .get("id")
+                .and_then(|value| {
+                    value
+                        .as_u64()
+                        .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
+                })
+                .ok_or(EclassError::NotAFile)?;
+            file_ids.push(id);
+        }
+        let submission = self
+            .post_json(
+                &format!("/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions"),
+                &json!({"submission": {"submission_type": "online_upload", "file_ids": file_ids}}),
+            )
+            .await?;
+        Ok(
+            json!({"file_ids": file_ids, "submission_id": submission.get("id").cloned().unwrap_or(Value::Null)}),
+        )
     }
 
     /// OZ native PDF export is a browser UI flow.

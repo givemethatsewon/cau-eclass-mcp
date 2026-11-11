@@ -11,6 +11,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Asia::Seoul;
 use futures_util::{StreamExt, stream};
 use regex::Regex;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -33,6 +34,30 @@ pub struct Paged {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct FileFingerprint {
+    path: String,
+    name: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SubmissionPlan {
+    plan_id: String,
+    course_id: u32,
+    assignment_id: u32,
+    assignment_name: String,
+    user_id: u64,
+    files: Vec<FileFingerprint>,
+    previous_attempt: Option<i64>,
+    previous_submitted_at: Option<String>,
+    expires_at: DateTime<Utc>,
+    problems: Vec<String>,
+    ready: bool,
+    state: String,
+}
+
 #[derive(Debug, Clone)]
 struct CachedMaterial {
     revision: (Option<String>, Option<String>),
@@ -47,6 +72,8 @@ pub struct EClassService {
     enable_submission: bool,
     material_cache: Mutex<HashMap<String, CachedMaterial>>,
     material_lock: Mutex<()>,
+    plans: Mutex<HashMap<String, SubmissionPlan>>,
+    submission_lock: Mutex<()>,
 }
 
 impl EClassService {
@@ -67,6 +94,8 @@ impl EClassService {
             enable_submission,
             material_cache: Mutex::new(HashMap::new()),
             material_lock: Mutex::new(()),
+            plans: Mutex::new(HashMap::new()),
+            submission_lock: Mutex::new(()),
         }
     }
 
@@ -1219,27 +1248,288 @@ impl EClassService {
         }))
     }
 
-    /// Preparation and submission remain in the browser build.
-    pub async fn prepare_submission(
-        &self,
-        _course_id: u32,
-        _assignment_id: u32,
-        _files: &[String],
-    ) -> Result<Value, EclassError> {
-        Err(EclassError::BrowserOnly(
-            "prepare_submission requires the Python/browser build",
-        ))
+    fn fingerprint(path: &str) -> Result<FileFingerprint, EclassError> {
+        let path = expand_home(path);
+        if !path.is_file() || std::fs::metadata(&path)?.len() > 10 * 1024 * 1024 {
+            return Err(EclassError::BrowserOnly(
+                "each submission file must exist and be at most 10 MiB",
+            ));
+        }
+        let bytes = std::fs::read(&path)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        Ok(FileFingerprint {
+            path: path.to_string_lossy().to_string(),
+            name: path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("file")
+                .to_string(),
+            size: u64::try_from(bytes.len()).map_err(|_| EclassError::InvalidPageRange)?,
+            sha256: hex::encode(hasher.finalize()),
+        })
     }
 
-    /// Submission remains disabled in the Rust core.
+    /// Validate local files and the assignment, returning a short-lived plan.
+    pub async fn prepare_submission(
+        &self,
+        course_id: u32,
+        assignment_id: u32,
+        files: &[String],
+    ) -> Result<Value, EclassError> {
+        let assignment = self.assignment(course_id, assignment_id).await?;
+        let status = self.session_status().await?;
+        let user_id = status
+            .get("user")
+            .and_then(|user| user.get("id"))
+            .and_then(Value::as_u64)
+            .ok_or(EclassError::NoProfile)?;
+        let existing = self.submission(course_id, assignment_id).await?;
+        let manifest = files
+            .iter()
+            .map(|path| Self::fingerprint(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut problems = Vec::new();
+        if manifest.is_empty() {
+            problems.push("At least one file is required".to_string());
+        }
+        if !assignment
+            .get("submission_types")
+            .and_then(Value::as_array)
+            .is_some_and(|types| {
+                types
+                    .iter()
+                    .any(|value| value.as_str() == Some("online_upload"))
+            })
+        {
+            problems.push("Assignment does not allow file upload".to_string());
+        }
+        if assignment.get("locked_for_user").and_then(Value::as_bool) == Some(true) {
+            problems.push("Assignment is locked".to_string());
+        }
+        if let Some(allowed) = assignment
+            .get("allowed_extensions")
+            .and_then(Value::as_array)
+        {
+            let allowed: Vec<String> = allowed
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .collect();
+            if !allowed.is_empty()
+                && manifest.iter().any(|file| {
+                    !allowed.contains(
+                        &Path::new(&file.name)
+                            .extension()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or_default()
+                            .to_ascii_lowercase(),
+                    )
+                })
+            {
+                problems.push("File extension is not allowed".to_string());
+            }
+        }
+        if assignment
+            .get("group_category_id")
+            .is_some_and(|value| !value.is_null())
+        {
+            problems.push("Group submissions require a separately verified workflow".to_string());
+        }
+        if assignment.get("turnitin_enabled").and_then(Value::as_bool) == Some(true)
+            || assignment.get("vericite_enabled").and_then(Value::as_bool) == Some(true)
+        {
+            problems.push(
+                "External originality agreement requires a separately verified workflow"
+                    .to_string(),
+            );
+        }
+        let attempts = assignment
+            .get("allowed_attempts")
+            .and_then(Value::as_i64)
+            .unwrap_or(-1);
+        let previous_attempt = existing.get("attempt").and_then(Value::as_i64);
+        if attempts >= 0 && previous_attempt.unwrap_or(0) >= attempts {
+            problems.push("No submission attempts remain".to_string());
+        }
+        if manifest.len() > 10
+            || manifest.iter().map(|file| file.size).sum::<u64>() > 20 * 1024 * 1024
+        {
+            problems.push("Submission limit: 10 files and 20 MiB total".to_string());
+        }
+        let now = Utc::now();
+        let mut plans = self.plans.lock().await;
+        plans.retain(|_, plan| plan.expires_at > now);
+        if plans.len() >= 100 {
+            return Err(EclassError::TooManyPlans);
+        }
+        let plan_id = unique_suffix();
+        let mut plan = SubmissionPlan {
+            plan_id: plan_id.clone(),
+            course_id,
+            assignment_id,
+            assignment_name: assignment
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("Assignment")
+                .to_string(),
+            user_id,
+            files: manifest,
+            previous_attempt,
+            previous_submitted_at: existing
+                .get("submitted_at")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            expires_at: now + chrono::Duration::minutes(10),
+            problems,
+            ready: false,
+            state: "prepared".to_string(),
+        };
+        plan.ready = plan.problems.is_empty();
+        let result = serde_json::to_value(&plan)?;
+        plans.insert(plan_id, plan);
+        Ok(result)
+    }
+
+    /// Upload prepared bytes and verify the resulting submission.
     pub async fn submit_assignment(
         &self,
-        _plan_id: &str,
-        _confirmation: &str,
+        plan_id: &str,
+        confirmation: &str,
     ) -> Result<Value, EclassError> {
-        Err(EclassError::BrowserOnly(
-            "submit_assignment requires the Python/browser build",
-        ))
+        let _guard = self.submission_lock.lock().await;
+        if !self.enable_submission {
+            return Err(EclassError::BrowserOnly(
+                "actual submission is disabled; no upload or POST was sent",
+            ));
+        }
+        let plan = {
+            let plans = self.plans.lock().await;
+            plans
+                .get(plan_id)
+                .cloned()
+                .ok_or(EclassError::MaterialNotFound)?
+        };
+        if plan.state != "prepared" || !plan.ready {
+            return Err(EclassError::BrowserOnly(
+                "a ready, unused preparation plan is required",
+            ));
+        }
+        if confirmation != format!("SUBMIT {}", plan.assignment_id) {
+            return Err(EclassError::BrowserOnly(
+                "confirmation must exactly match SUBMIT followed by the assignment ID",
+            ));
+        }
+        if plan.expires_at < Utc::now() {
+            return Err(EclassError::BrowserOnly("preparation plan expired"));
+        }
+        let current = plan
+            .files
+            .iter()
+            .map(|file| Self::fingerprint(&file.path))
+            .collect::<Result<Vec<_>, _>>()?;
+        if current != plan.files {
+            return Err(EclassError::BrowserOnly("files changed after preparation"));
+        }
+        let paths = plan
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        let fresh = self
+            .prepare_submission(plan.course_id, plan.assignment_id, &paths)
+            .await?;
+        let fresh_files = fresh.get("files").cloned().unwrap_or(Value::Null);
+        let fresh_ready = fresh.get("ready").and_then(Value::as_bool) == Some(true);
+        let fresh_user = fresh.get("user_id").and_then(Value::as_u64);
+        let fresh_attempt = fresh.get("previous_attempt").and_then(Value::as_i64);
+        let fresh_submitted = fresh.get("previous_submitted_at").and_then(Value::as_str);
+        if !fresh_ready
+            || fresh_files != serde_json::to_value(&plan.files)?
+            || fresh_user != Some(plan.user_id)
+            || fresh_attempt != plan.previous_attempt
+            || fresh_submitted != plan.previous_submitted_at.as_deref()
+        {
+            return Err(EclassError::BrowserOnly(
+                "assignment, session, or submission changed; prepare again",
+            ));
+        }
+        let mut payload = Vec::new();
+        for file in &plan.files {
+            let bytes = std::fs::read(&file.path)?;
+            if u64::try_from(bytes.len()).ok() != Some(file.size) {
+                return Err(EclassError::BrowserOnly("files changed after preparation"));
+            }
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            if hex::encode(hasher.finalize()) != file.sha256 {
+                return Err(EclassError::BrowserOnly("files changed after preparation"));
+            }
+            let content_type = mime_guess::from_path(&file.name)
+                .first_or_octet_stream()
+                .to_string();
+            payload.push((file.name.clone(), bytes, content_type));
+        }
+        if let Some(stored) = self.plans.lock().await.get_mut(plan_id) {
+            stored.state = "in_flight".to_string();
+        }
+        let result = self
+            .transport
+            .submit_files(plan.course_id, plan.assignment_id, &payload)
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => {
+                if let Some(stored) = self.plans.lock().await.get_mut(plan_id) {
+                    stored.state = "uncertain".to_string();
+                }
+                return Err(EclassError::BrowserOnly(
+                    "upload/submission outcome uncertain; inspect get_submission; do not retry this plan",
+                ));
+            }
+        };
+        self.invalidate().await;
+        let stored = self.submission(plan.course_id, plan.assignment_id).await?;
+        let expected: Vec<u64> = result
+            .get("file_ids")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default();
+        let actual: Vec<u64> = stored
+            .get("attachments")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.get("id").and_then(Value::as_u64))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !expected.iter().all(|id| actual.contains(id))
+            || stored.get("submitted_at").is_none_or(Value::is_null)
+        {
+            if let Some(stored_plan) = self.plans.lock().await.get_mut(plan_id) {
+                stored_plan.state = "uncertain".to_string();
+            }
+            return Err(EclassError::BrowserOnly(
+                "submission response could not be verified; check server state before retrying",
+            ));
+        }
+        if let Some(stored_plan) = self.plans.lock().await.get_mut(plan_id) {
+            stored_plan.state = "verified".to_string();
+        }
+        Ok(json!({"state": "verified", "submission": stored}))
+    }
+}
+
+fn expand_home(value: &str) -> PathBuf {
+    if let Some(rest) = value.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(rest)
+    } else {
+        PathBuf::from(value)
     }
 }
 

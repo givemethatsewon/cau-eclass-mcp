@@ -548,7 +548,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "prepare_submission",
-            description: "Submission validation; requires the Python/browser build.",
+            description: "Validate local files and assignment; create a short-lived plan. No upload.",
             input_schema: schema(
                 json!({"course_id": {"type": "integer"}, "assignment_id": {"type": "integer"}, "files": {"type": "array", "items": {"type": "string"}}}),
                 &["course_id", "assignment_id", "files"],
@@ -557,7 +557,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "submit_assignment",
-            description: "Actual submission; requires the Python/browser build.",
+            description: "Actual submission. Disabled by default; requires opt-in, a ready plan and confirmation.",
             input_schema: schema(
                 json!({"plan_id": {"type": "string"}, "confirmation": {"type": "string"}}),
                 &["plan_id", "confirmation"],
