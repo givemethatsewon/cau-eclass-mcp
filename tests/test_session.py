@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -47,4 +48,5 @@ def test_session_rejects_unknown_version():
 def test_save_session_is_owner_only(tmp_path):
     path = save_session(Session(cookies=[{"name": "sid", "value": "x"}]), tmp_path / "s.json")
     assert json.loads(path.read_text())["version"] == 1
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
