@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-11-12
+
+- **Rust MCP가 기본 서버**: FastMCP와 Python 전체 MCP 서버를 제거하고 Rust stdio JSON-RPC 서버 27개 도구로 통일.
+- **과제 제출을 Rust HTTP로 이식**: CSRF, Canvas 업로드 티켓, multipart 업로드(쿠키 미전송), 제출 POST, readback 검증. 기본 비활성화.
+- **Python은 OZ PDF 헬퍼로 축소**: `eclass-oz-export`가 `session.json`을 읽고 Playwright로 OZ Save → PDF를 실행. Rust MCP가 필요할 때 subprocess로 호출하고 경로·PDF 헤더·크기를 재검증.
+- CDP, Aside, FastMCP 의존성과 레거시 Python HTTP 서비스 제거.
+- Python 의존성은 `pypdf`와 선택적 `oz` extra(`playwright`)만 유지.
+
 ## 0.4.0 — 2026-11-12
 
 - **HTTP 우선 전송**: `eclass-mcp login`으로 전용 브라우저 세션을 한 번 저장하고, 이후 Canvas/LearningX 조회·다운로드는 브라우저 없이 `httpx`로 처리. `Storage.getCookies`로 HttpOnly 쿠키를 수집한다.

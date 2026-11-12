@@ -1,8 +1,7 @@
-# Rust core (experimental)
+# Rust MCP
 
-This directory is a standalone Rust implementation of the CAU e-Class MCP read
-and download core. It is intentionally separate from the Python package so the
-port can be evaluated without destabilizing `0.4.0`.
+This directory is the primary Rust implementation of the CAU e-Class MCP. The
+Python package is now only the optional OZ PDF helper.
 
 ## Status
 
@@ -12,10 +11,12 @@ port can be evaluated without destabilizing `0.4.0`.
   announcements, syllabus text, boards, groups, PDF validation/page text,
   Canvas upload/submission over HTTP, and 27 MCP tool schemas (the Python 26
   plus `get_onboarding_status`).
-- **Python/browser only:** OZ native PDF export (`download_syllabus_pdf`).
-  The Rust tool returns a clear `BrowserOnly` error for it.
-- **Not ported:** the legacy `aside` transport switch. Rust always uses the
-  saved HTTP session; `login` is the only browser step.
+- **Optional Python helper:** OZ native PDF export (`download_syllabus_pdf`).
+  Rust invokes `eclass-oz-export` (Playwright) only for this tool; it returns a
+  clear error when the helper is not installed.
+- **Removed:** the legacy `aside`/CDP transport switch and the FastMCP Python
+  server. Rust always uses the saved HTTP session; `login` is the only browser
+  step for reads and downloads.
 
 ## Build and run
 
@@ -25,11 +26,11 @@ cargo build --release
 ./target/release/eclass-mcp-rs --help
 ```
 
-The Rust binary reads the same `session.json` as the Python build. Create it
-once with the Python command:
+The Rust binary creates the same `session.json` used by the OZ helper. Create it
+once with Rust:
 
 ```sh
-eclass-mcp login
+./target/release/eclass-mcp-rs login
 ```
 
 Then:
@@ -48,7 +49,7 @@ LearningX token, and prints structured next actions. The MCP tool
 `get_onboarding_status` exposes the same state to an agent. The schema and
 action codes are documented in [ONBOARDING.md](ONBOARDING.md).
 
-The session file is the same one used by the Python build: macOS
+The session file is shared with the optional Python OZ helper: macOS
 `~/Library/Application Support/cau-eclass/session.json`, Linux
 `${XDG_CONFIG_HOME:-~/.config}/cau-eclass/session.json`, Windows
 `%APPDATA%\cau-eclass\session.json`. It contains only `.cau.ac.kr` cookies and
@@ -69,12 +70,12 @@ curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main
 eclass-mcp onboard --client claude
 ```
 
-Users need no Rust, Python, uv, or virtualenv. The release workflow builds
-macOS arm64/x86_64, Linux x86_64/arm64, and Windows x64 archives with SHA-256
-files. The first beta is unsigned; the release notes must say so, and Windows
-may show SmartScreen. During the beta, the Python 0.4.0 `uv` installation
-remains a fallback. See [RELEASING.md](RELEASING.md) for version pinning, the
-update path, signing, notarization, and the optional Homebrew tap.
+Users need no Rust, Python, uv, or virtualenv for the 26 HTTP tools. The release
+workflow builds macOS arm64/x86_64, Linux x86_64/arm64, and Windows x64 archives
+with SHA-256 files. The first beta is unsigned; the release notes must say so,
+and Windows may show SmartScreen. OZ PDF is optional and needs the small
+`eclass-oz-export` Python helper. See [RELEASING.md](RELEASING.md) for version
+pinning, the update path, signing, notarization, and the optional Homebrew tap.
 
 
 ## Verification
@@ -87,22 +88,22 @@ cargo build --release
 ```
 
 The test suite includes a synthetic wiremock Canvas/LearningX server, a real
-PDF fixture, session/cookie rules, cache behavior, and MCP initialize/tools
-calls. It does not use a real school account.
+PDF fixture, session/cookie rules, cache behavior, a fake OZ helper invocation,
+and MCP initialize/tools calls. It does not use a real school account.
 
 ## Measured locally
 
-Same `scripts/benchmark_server.py` harness, fake saved session, no e-Class
-network calls, Apple M3 Max. `tools/list` includes process startup, MCP
+Same local harness with a fake saved session and no e-Class network calls,
+Apple M3 Max. `tools/list` includes process startup, MCP
 initialize, and one tool listing; CPU is user+system from `/usr/bin/time -l`.
 
 | Server | Wall time | CPU time | Max RSS | Idle RSS | Processes |
 |---|---:|---:|---:|---:|---:|
 | Python 0.4.0 | ~0.58–0.63 s | ~0.62 s | ~106 MiB | ~106–111 MiB | 1 |
-| Rust core | **~0.03 s** | **<0.01 s** | **~10.5 MiB** | **~9.6 MiB** | 1 |
+| Rust core | **~0.04 s** | **<0.01 s** | **~10.5 MiB** | **~9.6 MiB** | 1 |
 
 Approximate improvement: **18–21× faster startup**, **~90–91% less memory**,
-and a **16 MiB single release binary**. The Rust server spawns no browser for
+and a **17 MiB single release binary**. The Rust server spawns no browser for
 reads/downloads; the Python browser mode required an external Chrome tree (about
 674 MiB / 7 processes in the local test).
 
@@ -131,18 +132,15 @@ runtime:
   briefing, PDF validation/text and MCP stdio all have Rust implementations.
 - `pypdf` is replaced by `lopdf`; the fixture and integration tests cover the
   normal page-text path.
-- The legacy `aside` adapter is optional. HTTP mode does not need it.
+- FastMCP, Aside, and CDP are removed; the OZ helper is the only optional Python process.
 
-The only remaining browser-bound features are:
+The only remaining browser-bound feature is:
 
-1. OZ native PDF export (`download_syllabus_pdf`): DOM clicks, a Save dialog
-   and a browser download event.
-2. Assignment preparation/submission: Canvas upload tickets, CSRF and a
-   verified write boundary.
+1. OZ native PDF export (`download_syllabus_pdf`): DOM clicks, a Save dialog and
+   a browser download event.
 
-Those are **not Python-language requirements**; they are browser UI flows. They
-can be ported to Rust with browser automation or kept as a small
-browser helper while the Rust core handles everything else. The safe staging is
-to ship Rust for reads/downloads first, then port OZ/submission only after
-real-account verification.
+It is **not a Python-language requirement**; it is a browser UI flow. The Rust
+core invokes an optional `eclass-oz-export` helper with Playwright. Assignment
+submission is already Rust HTTP, synthetic-tested and disabled by default;
+real-account verification remains separate.
 

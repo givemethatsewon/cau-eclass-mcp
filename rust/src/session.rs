@@ -1,6 +1,6 @@
 //! Browser-session persistence and Chrome profile cookie import.
 //!
-//! The file format is compatible with the Python build: `.cau.ac.kr` cookies,
+//! The file format is shared with the Python OZ helper: `.cau.ac.kr` cookies,
 //! an optional browser id, and a `version: 1` envelope.
 
 use std::{

@@ -23,11 +23,7 @@ use crate::{
 };
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "eclass-mcp-rs",
-    version,
-    about = "Experimental Rust core for the CAU e-Class MCP"
-)]
+#[command(name = "eclass-mcp-rs", version, about = "CAU e-Class MCP (Rust)")]
 struct Cli {
     /// Saved session path (env: ECLASS_SESSION_FILE).
     #[arg(long, global = true)]
@@ -342,7 +338,6 @@ fn logout(session_file: Option<PathBuf>) -> anyhow::Result<i32> {
 fn config(client: &str, session_file: Option<PathBuf>) -> anyhow::Result<i32> {
     let command = std::env::current_exe()?.to_string_lossy().to_string();
     let mut env = serde_json::Map::new();
-    env.insert("ECLASS_BROWSER".to_string(), json!("http"));
     env.insert("ECLASS_ENABLE_SUBMISSION".to_string(), json!("0"));
     if let Some(session_file) = session_file {
         env.insert("ECLASS_SESSION_FILE".to_string(), json!(session_file));
@@ -353,6 +348,8 @@ fn config(client: &str, session_file: Option<PathBuf>) -> anyhow::Result<i32> {
         "ECLASS_DOWNLOAD_DIR",
         "ECLASS_CACHE_TTL",
         "ECLASS_AUTO_REFRESH",
+        "ECLASS_OZ_HELPER",
+        "ECLASS_OZ_BROWSER",
     ] {
         if let Ok(value) = std::env::var(key) {
             env.insert(key.to_string(), json!(value));

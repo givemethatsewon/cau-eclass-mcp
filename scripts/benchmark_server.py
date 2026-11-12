@@ -1,13 +1,11 @@
 """Measure an MCP stdio server's startup, tool count and idle process-tree RSS.
 
-The same harness can compare the Python server with a future Go/Rust binary:
+This harness speaks raw newline-delimited JSON-RPC, so it does not depend on
+FastMCP or any Python MCP client.
 
-    python scripts/benchmark_server.py --label http \
-      --env ECLASS_BROWSER=http --env ECLASS_SESSION_FILE=/path/session.json
-
-    python scripts/benchmark_server.py --label go --command './eclass-mcp serve'
-
-The idle measurement keeps stdin open so the server stays in its lifespan.
+    python scripts/benchmark_server.py --label rust \
+      --command /absolute/path/eclass-mcp serve \
+      --env ECLASS_SESSION_FILE=/path/session.json
 """
 
 from __future__ import annotations
@@ -19,7 +17,6 @@ import os
 import signal
 import statistics
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -85,16 +82,52 @@ def idle(command: list[str], cwd: Path, env: dict, seconds: float) -> tuple[floa
 
 
 async def startup(command: list[str], cwd: Path, env: dict) -> tuple[float, int]:
-    from fastmcp import Client
-    from fastmcp.client.transports import StdioTransport
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(cwd),
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert process.stdin is not None and process.stdout is not None
+
+    async def call(payload: dict) -> dict:
+        process.stdin.write((json.dumps(payload, separators=(",", ":")) + "\n").encode())
+        await process.stdin.drain()
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=60)
+        if not line:
+            raise RuntimeError("server closed stdout")
+        return json.loads(line)
 
     started = time.perf_counter()
-    async with Client(
-        StdioTransport(command=command[0], args=command[1:], env=env, cwd=str(cwd)),
-        timeout=60,
-    ) as client:
-        tools = await client.list_tools()
-    return time.perf_counter() - started, len(tools)
+    try:
+        await call(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "benchmark", "version": "1"},
+                },
+            }
+        )
+        process.stdin.write(
+            b'{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
+        )
+        await process.stdin.drain()
+        result = await call({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    finally:
+        process.stdin.close()
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+    return time.perf_counter() - started, len(result.get("result", {}).get("tools", []))
 
 
 def parse_env(values: list[str]) -> dict:
@@ -120,7 +153,7 @@ async def main_async(args):
             rss, count = measured
             rss_values.append(rss)
             process_counts.append(count)
-        time.sleep(0.3)
+        await asyncio.sleep(0.3)
     result = {
         "label": args.label,
         "command": command,
@@ -148,7 +181,7 @@ def main():
     parser.add_argument(
         "--command",
         nargs="+",
-        default=[sys.executable, "-m", "eclass_mcp.cli", "serve"],
+        default=["eclass-mcp", "serve"],
         help="Server command; quote paths with spaces",
     )
     parser.add_argument("--cwd", default=".", help="Working directory")

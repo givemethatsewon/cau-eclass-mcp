@@ -32,14 +32,9 @@ jobs:
               version = tomllib.load(source)['project']['version']
           assert os.environ['RELEASE_REF'] == 'v' + version, 'Select the exact version tag'
           PY
-      - run: uv sync --frozen --extra browser
+      - run: uv sync --frozen
       - run: uv run ruff check src tests scripts
       - run: uv run pytest -q
-      - run: uv run playwright install --with-deps chromium
-      - name: Test real CDP protocol with synthetic data
-        run: |
-          export ECLASS_TEST_CHROME="$(uv run python -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
-          uv run pytest tests/test_cdp_browser.py -q
       - run: uv build --no-sources
       - run: uv run python scripts/check_dist.py
       - run: uv run python scripts/check_install.py

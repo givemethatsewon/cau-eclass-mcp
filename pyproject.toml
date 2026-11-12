@@ -1,21 +1,16 @@
 [project]
 name = "cau-eclass-mcp"
-version = "0.4.0"
-description = "CAU e-Class MCP with a one-time browser login and lightweight HTTP reads"
+version = "0.5.0"
+description = "Small OZ syllabus PDF export helper for CAU e-Class"
 readme = "README.md"
 license = "LicenseRef-CAU-EClass-Noncommercial-1.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "givemethatsewon" }]
-keywords = ["mcp", "canvas", "learningx", "cau", "chromium"]
+keywords = ["canvas", "learningx", "cau", "oz", "playwright"]
 classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.12", "Topic :: Education"]
 requires-python = ">=3.12"
 dependencies = [
-    "fastmcp==4.1.4",
-    "beautifulsoup4>=4.12,<5",
     "pypdf>=6,<7",
-    "httpx>=0.28,<1",
-    "browser-cookie3>=0.20,<0.21",
-    "tzdata>=2025.2",
 ]
 
 [project.urls]
@@ -24,10 +19,10 @@ Issues = "https://github.com/givemethatsewon/cau-eclass-mcp/issues"
 Documentation = "https://github.com/givemethatsewon/cau-eclass-mcp#readme"
 
 [project.scripts]
-eclass-mcp = "eclass_mcp.cli:main"
+eclass-oz-export = "eclass_mcp.oz_export:main"
 
 [project.optional-dependencies]
-cdp = [
+oz = [
     "playwright>=1.60,<2",
 ]
 
@@ -55,5 +50,5 @@ select = ["E4", "E7", "E9", "F", "I", "B"]
 "skills/cau-eclass/SKILL.md" = "eclass_mcp/SKILL.md"
 
 [tool.hatch.build.targets.sdist]
-include = ["LICENSE", "NOTICE", "scripts/check_dist.py", "scripts/check_install.py", "scripts/benchmark_server.py", "src/", "tests/", "skills/", "docs/", "examples/", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "pyproject.toml", "uv.lock", "mcp.example.json"]
+include = ["LICENSE", "NOTICE", "scripts/check_dist.py", "src/", "tests/", "skills/", "README.md", "pyproject.toml", "uv.lock"]
 exclude = ["docs/verification.md"]

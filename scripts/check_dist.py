@@ -31,11 +31,11 @@ if __name__ == "__main__":
             assert any(name.endswith("/licenses/NOTICE") for name in names)
             metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
             assert "License-Expression: LicenseRef-CAU-EClass-Noncommercial-1.0" in archive.read(metadata_name).decode()
-            assert "eclass_mcp/cli.py" in names
-            assert "eclass_mcp/http_transport.py" in names
+            assert "eclass_mcp/oz_export.py" in names
             assert "eclass_mcp/session.py" in names
-            assert "eclass_mcp/cache.py" in names
-            assert "eclass_mcp/cdp.py" in names
+            assert "eclass_mcp/errors.py" in names
+            assert "eclass_mcp/server.py" not in names
+            assert "eclass_mcp/cli.py" not in names
     for source in sources:
         with tarfile.open(source) as archive:
             check(archive.getnames())

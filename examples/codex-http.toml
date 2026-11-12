@@ -1,7 +1,0 @@
-[mcp_servers.eclass]
-command = "/absolute/path/to/eclass-mcp"
-args = ["serve"]
-
-[mcp_servers.eclass.env]
-ECLASS_BROWSER = "http"
-ECLASS_ENABLE_SUBMISSION = "0"

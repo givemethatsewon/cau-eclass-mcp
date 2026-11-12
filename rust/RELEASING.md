@@ -10,8 +10,8 @@ For the first beta, keep the release cheap and reversible:
 - Publish `tar.gz`/`zip` archives with SHA-256 files.
 - Keep the install scripts version-pinnable (`ECLASS_VERSION=rust-v0.1.0`).
 - State clearly in the release notes that macOS/Windows binaries are unsigned.
-- Keep the Python `uv` path available as a fallback:
-  `uv tool install --python 3.12 'cau-eclass-mcp[browser]==0.4.0'`.
+- Python is not a fallback for the MCP server. It is only the optional OZ PDF
+  helper: `uv tool install --python 3.12 'cau-eclass-mcp[oz]==0.5.0'`.
 - Windows may show SmartScreen; macOS may show a Gatekeeper warning. Tell users
   how to verify the SHA-256 and how to proceed.
 
@@ -95,9 +95,9 @@ script is the zero-dependency path.
 
 ## Versioning
 
-`rust/Cargo.toml` is versioned independently from the Python package until the
-Rust build reaches parity. Use `rust-vX.Y.Z` tags to avoid colliding with the
-Python `vX.Y.Z` release workflow.
+`rust/Cargo.toml` is the primary MCP version. The Python package is now the
+independent `0.5.x` OZ helper. Use `rust-vX.Y.Z` and `vX.Y.Z` tags so the two
+release workflows cannot collide.
 
 ## First run
 

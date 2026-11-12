@@ -5,7 +5,7 @@
       "command": "/absolute/path/to/eclass-mcp",
       "args": ["serve"],
       "env": {
-        "ECLASS_BROWSER": "http",
+        "ECLASS_SESSION_FILE": "/absolute/path/session.json",
         "ECLASS_ENABLE_SUBMISSION": "0"
       }
     }

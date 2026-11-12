@@ -1,6 +1,5 @@
-"""Install the wheel in a temporary uv tool environment and verify the public CLI."""
+"""Install the wheel in a temporary uv tool environment and verify the helper CLI."""
 
-import json
 import os
 import subprocess
 import tempfile
@@ -27,38 +26,15 @@ def main():
                 "3.12",
                 "--from",
                 str(wheel),
-                "--with",
-                "playwright>=1.60,<2",
                 "cau-eclass-mcp",
             ],
             env=env,
             cwd=root,
         )
-        executable = root / "bin" / ("eclass-mcp.exe" if os.name == "nt" else "eclass-mcp")
-        version = run([str(executable), "--version"], env=env, cwd=root).strip()
-        skill = run([str(executable), "skill"], env=env, cwd=root)
-        assert "name: cau-eclass" in skill
-        config = json.loads(
-            run([str(executable), "config"], env={**env, "ECLASS_BROWSER": "cdp"}, cwd=root)
-        )
-        entry = config["mcpServers"]["eclass"]
-        assert entry["env"]["ECLASS_BROWSER"] == "cdp"
-        # Verify config preserves the virtualenv interpreter, rather than resolving its symlink.
-        assert (
-            run([entry["command"], "-m", "eclass_mcp.cli", "--version"], env=env, cwd=root).strip() == version
-        )
-        result = subprocess.run(
-            [str(executable), "doctor"],
-            env={**env, "ECLASS_BROWSER": "cdp", "ECLASS_CDP_ENDPOINT": "http://127.0.0.1:1"},
-            cwd=root,
-            encoding="utf-8",
-            capture_output=True,
-        )
-        assert result.returncode == 1
-        assert json.loads(result.stdout)["ok"] is False
-        print(
-            f"Clean wheel installation OK: {version}, bundled skill, generated config, doctor failure contract"
-        )
+        executable = root / "bin" / ("eclass-oz-export.exe" if os.name == "nt" else "eclass-oz-export")
+        help_text = run([str(executable), "--help"], env=env, cwd=root)
+        assert "OZ syllabus PDF" in help_text
+        print("Clean wheel installation OK: eclass-oz-export starts and exposes --help")
 
 
 if __name__ == "__main__":

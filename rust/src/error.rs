@@ -57,6 +57,8 @@ pub enum EclassError {
     InvalidMaxChars,
     #[error("unsupported operation in the Rust core: {0}")]
     BrowserOnly(&'static str),
+    #[error("OZ PDF helper failed: {0}")]
+    OzHelper(String),
     #[error("unknown tool: {0}")]
     UnknownTool(String),
     #[error("session file is invalid or unsupported")]

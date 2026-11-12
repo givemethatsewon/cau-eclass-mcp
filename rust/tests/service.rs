@@ -329,3 +329,51 @@ async fn submission_uses_http_upload_and_verifies_readback() {
     assert_eq!(result["state"], "verified");
     assert_eq!(result["submission"]["attachments"][0]["id"], 99);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn oz_helper_is_invoked_and_path_is_validated() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let helper = directory.path().join("fake-oz-export");
+    std::fs::write(
+        &helper,
+        r#"#!/bin/sh
+set -eu
+out=""
+id=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --course-id) id="$2"; shift 2 ;;
+    --output-dir) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$out"
+file="$out/syllabus-$id.pdf"
+printf '%%PDF-1.4\n' > "$file"
+printf '{"path":"%s","bytes":%s,"sha256":"`zeros`","page_count":1,"text":"fixture","pages":[{"page":1,"text":"fixture"}],"text_complete":true}' "$file" "$(wc -c < "$file" | tr -d ' ')"
+"#
+        .replace("`zeros`", &"0".repeat(64)),
+    )
+    .unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let transport = HttpTransport::new(
+        session(),
+        PathBuf::from("/tmp/rust-session.json"),
+        url::Url::parse("https://eclass3.cau.ac.kr").unwrap(),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    let service = EClassService::new(
+        Arc::new(transport),
+        Some(directory.path().to_path_buf()),
+        false,
+    )
+    .with_oz_helper(helper);
+    let result = service.syllabus_document(1, true).await.unwrap();
+    assert_eq!(result["course_id"], 1);
+    assert_eq!(result["page_count"], 1);
+    assert!(result["path"].as_str().unwrap().ends_with("syllabus-1.pdf"));
+}

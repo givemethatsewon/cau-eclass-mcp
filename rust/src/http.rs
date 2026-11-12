@@ -1046,17 +1046,6 @@ impl HttpTransport {
             json!({"file_ids": file_ids, "submission_id": submission.get("id").cloned().unwrap_or(Value::Null)}),
         )
     }
-
-    /// OZ native PDF export is a browser UI flow.
-    pub async fn syllabus_pdf(
-        &self,
-        _course_id: u32,
-        _destination: &Path,
-    ) -> Result<(), EclassError> {
-        Err(EclassError::BrowserOnly(
-            "download_syllabus_pdf requires the Python/browser build",
-        ))
-    }
 }
 
 /// A completed download.

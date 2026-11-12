@@ -12,27 +12,40 @@
 
 ## 로컬 릴리스 만들기
 
+Rust MCP 릴리스:
+
 ```sh
-uv sync --frozen --extra browser
+cd rust
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+cargo build --release
+```
+
+Python OZ 헬퍼 릴리스:
+
+```sh
+uv sync --frozen --extra oz
 uv run pytest -q
 uv run ruff check src tests scripts
 uv build --no-sources
 uv run python scripts/check_dist.py
+uv run python scripts/check_install.py
 ```
 
-`dist/`의 wheel은 사용자 설치용, tar.gz는 소스 배포용입니다. wheel에는 런타임 코드와 SKILL.md를 포함합니다. 분석 원본, 학습자료, 다운로드, 실제 계정 테스트 결과, 개인 MCP 설정은 포함하지 않습니다. 설치 시 Python 의존성을 받기 위한 네트워크 연결이 필요합니다.
+`dist/`의 wheel은 OZ PDF 헬퍼 설치용, tar.gz는 소스 배포용입니다. wheel에는
+`eclass_mcp/oz_export.py`, `session.py`, `errors.py`와 SKILL.md만 포함합니다.
+MCP 서버·FastMCP·CDP·전체 HTTP 서비스는 포함하지 않습니다.
 
-깨끗한 별도 환경에서 다음을 확인하세요.
+깨끗한 별도 환경에서 다음을 확인합니다.
 
 ```sh
-uv tool install --python 3.12 --from ./dist/cau_eclass_mcp-0.4.0-py3-none-any.whl cau-eclass-mcp
-eclass-mcp --version
-eclass-mcp login
-eclass-mcp config --client claude
-eclass-mcp skill
+uv tool install --python 3.12 --from ./dist/cau_eclass_mcp-0.5.0-py3-none-any.whl   --with 'playwright>=1.60,<2' cau-eclass-mcp
+eclass-oz-export --help
 ```
 
-계획서 OZ PDF나 제출 브라우저 도우미까지 쓸 때만 `--with 'playwright>=1.60,<2'`를 추가합니다. 패키지를 다시 설치하거나 위치를 변경했다면 `config` 출력을 다시 생성하세요. 출력되는 Python 경로는 설치된 가상환경의 절대 경로입니다. 임시 `uvx` 환경의 경로를 장기 설정에 넣지 않도록, 설정 생성에는 영구 `uv tool install` 또는 checkout의 `.venv`를 사용하세요.
+Rust MCP는 GitHub Releases의 `eclass-mcp` 바이너리를 사용합니다. OZ PDF를 쓸
+때만 `ECLASS_OZ_HELPER`에 `eclass-oz-export` 절대 경로를 지정합니다.
 
 ## 게시 설정
 
@@ -55,6 +68,6 @@ PyPI 계정 생성·이메일 인증·2FA 설정 후 [Publishing](https://pypi.o
 
 검증 완료된 커밋에 `v0.4.0` 태그를 만든 후 GitHub Actions의 **Publish to PyPI**를 해당 태그로 수동 실행합니다. 워크플로는 버전 일치 검사·테스트·빌드·배포본 검사를 수행하고 `pypi` 환경에서 OIDC Trusted Publishing으로 게시합니다. 일반 push/PR/릴리스 생성만으로 게시하지 않습니다.
 
-2026-10-26에 `0.2.0`을 PyPI에 게시했습니다. PyPI 직접 설치 후 버전·번들 스킬·생성 설정의 실행·doctor 실패 계약을 검증했고, PyPI의 wheel/sdist SHA256과 GitHub Actions 산출물이 일치함을 확인했습니다. 비상업 라이선스 메타데이터도 확인했습니다. MCP Registry는 아직 등록하지 않았습니다.
+2026-10-26에 `0.2.0`을 PyPI에 게시했습니다. 0.5.0은 OZ 전용 헬퍼로 패키지 범위를 축소했습니다. PyPI 직접 설치 후 버전·번들 스킬·생성 설정의 실행·doctor 실패 계약을 검증했고, PyPI의 wheel/sdist SHA256과 GitHub Actions 산출물이 일치함을 확인했습니다. 비상업 라이선스 메타데이터도 확인했습니다. MCP Registry는 아직 등록하지 않았습니다.
 
-패키지명과 실행 명령이 다르므로 일회성 실행은 `uvx --from 'cau-eclass-mcp[browser]==0.4.0' eclass-mcp --version`처럼 사용합니다. 장기 MCP 설정 생성에는 위의 `uv tool install`을 사용하세요.
+패키지명과 실행 명령이 다르므로 일회성 실행은 `uvx --from 'cau-eclass-mcp[oz]==0.5.0' eclass-oz-export --help`처럼 사용합니다. 장기 MCP 설정 생성에는 위의 `uv tool install`을 사용하세요.
