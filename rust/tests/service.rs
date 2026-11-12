@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use eclass_core::{
+    error::EclassError,
     http::HttpTransport,
     service::EClassService,
     session::{Cookie, Session},
@@ -57,14 +58,16 @@ async fn session_status_and_courses() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/users/self/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7, "name": "Fixture"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "7", "name": "Fixture"})),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/v1/courses"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            {"id": 1, "name": "Algorithms", "term": {"id": 96, "name": "2026 Fall"}},
-            {"id": 2, "name": "Networks", "term": {"id": 96, "name": "2026 Fall"}}
+            {"id": "1", "name": "Algorithms", "term": {"id": "96", "name": "2026 Fall"}},
+            {"id": "2", "name": "Networks", "term": {"id": "96", "name": "2026 Fall"}}
         ])))
         .mount(&server)
         .await;
@@ -82,25 +85,25 @@ async fn briefing_combines_todo_and_announcements() {
     Mock::given(method("GET"))
         .and(path("/api/v1/courses"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            {"id": 1, "name": "Algorithms", "term": {"id": 96, "name": "2026 Fall"}},
-            {"id": 2, "name": "Networks", "term": {"id": 96, "name": "2026 Fall"}}
+            {"id": "1", "name": "Algorithms", "term": {"id": "96", "name": "2026 Fall"}},
+            {"id": "2", "name": "Networks", "term": {"id": "96", "name": "2026 Fall"}}
         ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/v1/users/self/todo"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            {"type": "submitting", "course_id": 1, "context_name": "Algorithms",
-             "assignment": {"id": 10, "name": "Problem Set 4", "due_at": "2026-11-20T14:59:00Z"}}
+            {"type": "submitting", "course_id": "1", "context_name": "Algorithms",
+             "assignment": {"id": "10", "name": "Problem Set 4", "due_at": "2026-11-20T14:59:00Z"}}
         ])))
         .mount(&server)
         .await;
-    for course in [1, 2] {
+    for course in ["1", "2"] {
         Mock::given(method("GET"))
             .and(path("/api/v1/announcements"))
             .and(query_param("context_codes[]", format!("course_{course}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                {"id": 100 + course, "title": format!("Notice {course}"), "posted_at": "2026-11-11T09:00:00Z"}
+                {"id": 100, "title": format!("Notice {course}"), "posted_at": "2026-11-11T09:00:00Z"}
             ])))
             .expect(1)
             .mount(&server)
@@ -217,14 +220,20 @@ async fn commons_pdf_download_and_read_reuse_file() {
     Mock::given(method("GET"))
         .and(path("/learningx/api/v1/commons/contents"))
         .and(query_param("content_id", "fixture"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "result": {
-                "extension": "pdf",
-                "is_original_file_deleted": false,
-                "original_file_length": pdf.len(),
-                "download_url": download_url
-            }
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                json!({
+                    "result": {
+                        "extension": "pdf",
+                        "is_original_file_deleted": false,
+                        "original_file_length": pdf.len(),
+                        "download_url": download_url
+                    }
+                })
+                .to_string(),
+                "text/html; charset=UTF-8",
+            ),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -252,17 +261,75 @@ async fn commons_pdf_download_and_read_reuse_file() {
 }
 
 #[tokio::test]
+async fn html_login_page_is_reported_as_expired() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/self/profile"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw("<!DOCTYPE html><html>login</html>", "text/html"),
+        )
+        .mount(&server)
+        .await;
+    let transport = HttpTransport::new(
+        session(),
+        PathBuf::from("/tmp/rust-session.json"),
+        url::Url::parse(&server.uri()).unwrap(),
+        Duration::from_secs(20),
+    )
+    .unwrap()
+    .with_profile_dir(tempfile::tempdir().unwrap().keep());
+    let result = transport
+        .get("/api/v1/users/self/profile", false, false)
+        .await;
+    assert!(matches!(result, Err(EclassError::LoginRedirect)));
+}
+
+#[tokio::test]
+async fn group_activity_accepts_string_ids() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/self/groups"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "55788", "name": "Team 10"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/groups/55788/discussion_topics"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/groups/55788/files"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
+    let activity = service.group_activity(55_788).await.unwrap();
+    assert!(
+        activity["discussions"]["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(activity["files"]["items"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn submission_uses_http_upload_and_verifies_readback() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/users/self/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7, "name": "Fixture"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "7", "name": "Fixture"})),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/v1/courses/1/assignments/2"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 2,
+            "id": "2",
             "name": "Project",
             "submission_types": ["online_upload"],
             "allowed_extensions": ["pdf"],
@@ -276,7 +343,7 @@ async fn submission_uses_http_upload_and_verifies_readback() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "attempt": 0,
             "submitted_at": "2026-11-01T00:00:00Z",
-            "attachments": [{"id": 99}]
+            "attachments": [{"id": "99"}]
         })))
         .mount(&server)
         .await;
@@ -327,7 +394,7 @@ async fn submission_uses_http_upload_and_verifies_readback() {
         .await
         .unwrap();
     assert_eq!(result["state"], "verified");
-    assert_eq!(result["submission"]["attachments"][0]["id"], 99);
+    assert_eq!(result["submission"]["attachments"][0]["id"], "99");
 }
 
 #[cfg(unix)]

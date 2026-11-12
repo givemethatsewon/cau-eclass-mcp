@@ -366,7 +366,7 @@ impl EClassService {
             let start = start.to_string();
             let today = today.to_string();
             async move {
-                let course_id = course.get("id").and_then(Value::as_u64).unwrap_or_default();
+                let course_id = course.get("id").and_then(positive_u64).unwrap_or_default();
                 let result = announcements_on(&transport, course_id, &start, &today).await;
                 (course, result)
             }
@@ -375,7 +375,7 @@ impl EClassService {
 
         let mut announcements = Vec::new();
         for (course, result) in gathered {
-            let course_id = course.get("id").and_then(Value::as_u64).unwrap_or_default();
+            let course_id = course.get("id").and_then(positive_u64).unwrap_or_default();
             let course_name = course
                 .get("name")
                 .and_then(Value::as_str)
@@ -612,7 +612,7 @@ impl EClassService {
                     false,
                 )
                 .await?;
-            if file.get("id").and_then(Value::as_u64) != Some(u64::from(source_id)) {
+            if file.get("id").and_then(positive_u64) != Some(u64::from(source_id)) {
                 return Err(EclassError::MaterialNotFound);
             }
             let catalog = material_catalog(course_id, &[], std::slice::from_ref(&file));
@@ -1137,7 +1137,7 @@ impl EClassService {
             .and_then(Value::as_array)
             .is_some_and(|items| {
                 items.iter().any(|group| {
-                    group.get("id").and_then(Value::as_u64) == Some(u64::from(group_id))
+                    group.get("id").and_then(positive_u64) == Some(u64::from(group_id))
                 })
             })
         {
@@ -1389,7 +1389,7 @@ impl EClassService {
         let user_id = status
             .get("user")
             .and_then(|user| user.get("id"))
-            .and_then(Value::as_u64)
+            .and_then(positive_u64)
             .ok_or(EclassError::NoProfile)?;
         let existing = self.submission(course_id, assignment_id).await?;
         let manifest = files
@@ -1600,7 +1600,7 @@ impl EClassService {
         let expected: Vec<u64> = result
             .get("file_ids")
             .and_then(Value::as_array)
-            .map(|values| values.iter().filter_map(Value::as_u64).collect())
+            .map(|values| values.iter().filter_map(positive_u64).collect())
             .unwrap_or_default();
         let actual: Vec<u64> = stored
             .get("attachments")
@@ -1608,7 +1608,7 @@ impl EClassService {
             .map(|values| {
                 values
                     .iter()
-                    .filter_map(|value| value.get("id").and_then(Value::as_u64))
+                    .filter_map(|value| value.get("id").and_then(positive_u64))
                     .collect()
             })
             .unwrap_or_default();
@@ -1775,6 +1775,14 @@ fn file_sha256(path: &Path) -> Result<String, EclassError> {
         hasher.update(&buffer[..read]);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn positive_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.parse::<u64>().ok(),
+        _ => None,
+    }
 }
 
 fn select(value: &Value, keys: &[&str]) -> Value {

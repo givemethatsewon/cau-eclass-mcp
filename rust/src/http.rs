@@ -285,12 +285,6 @@ impl HttpTransport {
                     if response.status >= 400 {
                         return Err(EclassError::Http(response.status));
                     }
-                    if !html && response.content_type.contains("html") {
-                        if attempt == 0 && self.try_refresh().await {
-                            continue;
-                        }
-                        return Err(EclassError::SessionExpired);
-                    }
                     return Ok(response);
                 }
                 Err(EclassError::LoginRedirect) if attempt == 0 => {
@@ -372,7 +366,11 @@ impl HttpTransport {
                 Value::String(text)
             } else {
                 let text = strip_canvas_prefix(&text);
-                serde_json::from_str(text).map_err(|_| EclassError::ExpectedJson)?
+                match serde_json::from_str(text) {
+                    Ok(value) => value,
+                    Err(_) if looks_like_html(text) => return Err(EclassError::LoginRedirect),
+                    Err(_) => return Err(EclassError::ExpectedJson),
+                }
             };
             return Ok(GetResponse {
                 status,
@@ -1088,6 +1086,12 @@ fn strip_canvas_prefix(value: &str) -> &str {
     value
         .strip_prefix("while(1);")
         .map_or(value, str::trim_start)
+}
+
+fn looks_like_html(value: &str) -> bool {
+    let value = strip_canvas_prefix(value);
+    let head = value.get(..64).unwrap_or(value).to_ascii_lowercase();
+    head.starts_with("<!doctype html") || head.starts_with("<html") || head.starts_with("<?xml")
 }
 
 fn positive_id(value: &Value) -> Option<u32> {
