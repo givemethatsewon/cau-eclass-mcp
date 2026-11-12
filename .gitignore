@@ -34,3 +34,6 @@ test-results/
 *.key
 session.json
 *.session.json
+
+# Local agent work artifacts.
+_workspace/
