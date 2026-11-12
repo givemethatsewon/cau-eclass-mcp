@@ -47,9 +47,9 @@ The Python package is now only an optional OZ PDF helper.
 - **Only HTTP transport is available.** FastMCP, Aside, and CDP were removed.
   Rust reads Chrome profile cookies for the one-time `login` and session
   refresh; no remote debugging port is opened.
-- **MCP protocol version is `2024-11-05`.** The FastMCP Python client accepted
-  the Rust server and listed all 27 tools. Rust adds
-  `get_onboarding_status` to the Python 26-tool surface.
+- **MCP protocol version is `2024-11-05`.** The Rust server exposes 27 tools.
+  The legacy FastMCP client accepted the server before FastMCP was removed;
+  current clients use raw stdio JSON-RPC.
 - **Single-account process.** Like the Python service, caches and the saved
   session assume one account per process.
 
