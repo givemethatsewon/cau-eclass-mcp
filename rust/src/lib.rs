@@ -1,5 +1,6 @@
 //! Experimental Rust core for the CAU e-Class MCP.
 
+pub mod aside;
 pub mod catalog;
 pub mod cli;
 pub mod documents;

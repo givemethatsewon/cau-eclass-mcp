@@ -10,7 +10,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, SecondsFormat, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -56,6 +57,9 @@ pub struct Session {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub browser: Option<String>,
+    /// When the LearningX `xn_api_token` was last minted through an LTI launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learningx_token_at: Option<String>,
     pub cookies: Vec<Cookie>,
 }
 
@@ -85,6 +89,7 @@ impl Session {
             saved_at: now_iso(),
             endpoint: None,
             browser,
+            learningx_token_at: None,
             cookies: values.into_values().collect(),
         }
     }
@@ -110,6 +115,17 @@ impl Session {
                         .is_some_and(|expires| expires > 0.0 && expires <= now)
             })
             .map(|cookie| cookie.value.as_str())
+    }
+
+    /// Age of the current LearningX token in seconds, when its mint time is known.
+    #[must_use]
+    pub fn learningx_token_age_secs(&self) -> Option<i64> {
+        let minted = DateTime::parse_from_rfc3339(self.learningx_token_at.as_deref()?).ok()?;
+        Some(
+            (Utc::now() - minted.with_timezone(&Utc))
+                .num_seconds()
+                .max(0),
+        )
     }
 
     /// Build the `Cookie` header for one URL.
@@ -432,7 +448,9 @@ pub async fn login_from_profile(
             Ok(cookies) => {
                 let mut session = Session::from_browser(cookies, Some(browser_id.to_string()));
                 if verify_session(&session).await {
-                    ensure_learningx_token(&mut session).await;
+                    if let Ok(base) = Url::parse(ORIGIN) {
+                        ensure_learningx_token(&mut session, &base).await;
+                    }
                     return Ok(session);
                 }
                 last_error = EclassError::NotLoggedIn;
@@ -456,7 +474,9 @@ pub async fn refresh_from_profile(
     if !verify_session(&session).await {
         return Err(EclassError::NotLoggedIn);
     }
-    ensure_learningx_token(&mut session).await;
+    if let Ok(base) = Url::parse(ORIGIN) {
+        ensure_learningx_token(&mut session, &base).await;
+    }
     Ok(session)
 }
 
@@ -508,48 +528,254 @@ pub async fn verify_session(session: &Session) -> bool {
         .is_some_and(|id| !id.is_null())
 }
 
-/// Ask LearningX for its API token with the saved cookies.
-pub async fn ensure_learningx_token(session: &mut Session) {
-    if session.token("xn_api_token").is_some() {
-        return;
+/// Mint the LearningX API token without a browser by replaying the LTI launch.
+///
+/// The board/module tool posts a signed LTI form from the Canvas course page.
+/// That POST sets `xn_api_token`, which is the only credential the LearningX
+/// JSON API needs beyond the Canvas session cookies.
+pub async fn mint_learningx_token(
+    session: &mut Session,
+    base: &Url,
+    course_id: Option<u32>,
+    force: bool,
+) -> Result<bool, EclassError> {
+    if !force && session.token("xn_api_token").is_some() {
+        return Ok(true);
     }
-    let Ok(base) = Url::parse(ORIGIN) else {
-        return;
-    };
-    let client = match reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
+    if force {
+        session
+            .cookies
+            .retain(|cookie| cookie.name != "xn_api_token");
+    }
+    if session
+        .cookie_header(&base.join("api/v1/users/self/profile")?)
+        .is_none()
     {
-        Ok(client) => client,
-        Err(_) => return,
+        return Err(EclassError::NoSession);
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()?;
+    let course = match course_id {
+        Some(course) => course,
+        None => first_course_id(session, base, &client).await?,
     };
-    for path in ["learningx/main", "learningx/dashboard"] {
-        let Ok(url) = base.join(path) else {
+    let tool = first_learningx_tool(session, base, &client, course).await?;
+    let page_url = base.join(&format!("courses/{course}/external_tools/{tool}"))?;
+    let html = get_text(session, &client, page_url.clone()).await?;
+    let Some((action, fields)) = lti_form(&html) else {
+        return Err(EclassError::LearningxTokenMissing);
+    };
+    let action_url = page_url
+        .join(&action)
+        .map_err(|_| EclassError::InvalidPath)?;
+    if action_url.scheme() != base.scheme()
+        || action_url.host_str() != base.host_str()
+        || action_url.port_or_known_default() != base.port_or_known_default()
+    {
+        return Err(EclassError::CrossOrigin);
+    }
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (name, value) in &fields {
+        serializer.append_pair(name, value);
+    }
+    let body = serializer.finish();
+    let cookie = session
+        .cookie_header(&action_url)
+        .ok_or(EclassError::NoSession)?;
+    let response = client
+        .post(action_url.clone())
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::REFERER, page_url.as_str())
+        .header(reqwest::header::COOKIE, cookie)
+        .body(body)
+        .send()
+        .await?;
+    for header in response.headers().get_all(reqwest::header::SET_COOKIE) {
+        if let Ok(value) = header.to_str() {
+            session.merge_set_cookie(value, &action_url);
+        }
+    }
+    if session.token("xn_api_token").is_some() {
+        session.learningx_token_at = Some(now_iso());
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+async fn first_course_id(
+    session: &Session,
+    base: &Url,
+    client: &reqwest::Client,
+) -> Result<u32, EclassError> {
+    let url = base.join("api/v1/courses?include[]=term&per_page=100")?;
+    let response = authorized_get(session, client, url).await?;
+    let text = decode_canvas_prefix(response)
+        .await
+        .ok_or(EclassError::CanvasSessionExpired)?;
+    let courses: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| EclassError::ExpectedJson)?;
+    let year = Utc::now().year().to_string();
+    let active = |course: &&serde_json::Value| {
+        course
+            .get("workflow_state")
+            .and_then(serde_json::Value::as_str)
+            != Some("completed")
+    };
+    let current = |course: &&serde_json::Value| {
+        course
+            .get("term")
+            .and_then(|term| term.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| name.contains(&year))
+    };
+    courses
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|course| active(course) && current(course))
+                .or_else(|| items.iter().find(active))
+                .and_then(|course| course.get("id").and_then(positive_id))
+        })
+        .ok_or(EclassError::LearningxTokenMissing)
+}
+
+async fn first_learningx_tool(
+    session: &Session,
+    base: &Url,
+    client: &reqwest::Client,
+    course_id: u32,
+) -> Result<u32, EclassError> {
+    let url = base.join(&format!("courses/{course_id}"))?;
+    let html = get_text(session, client, url).await?;
+    let document = scraper::Html::parse_document(&html);
+    let selector = scraper::Selector::parse("a[href*='external_tools']")
+        .map_err(|_| EclassError::InvalidPath)?;
+    let pattern = Regex::new(r"/external_tools/([0-9]+)").map_err(|_| EclassError::InvalidPath)?;
+    let mut fallback = None;
+    for anchor in document.select(&selector) {
+        let Some(href) = anchor.value().attr("href") else {
             continue;
         };
-        let Some(cookie) = session.cookie_header(&url) else {
-            break;
+        let Some(captures) = pattern.captures(href) else {
+            continue;
         };
-        let Ok(response) = client
-            .get(url.clone())
-            .header("Accept", JSON_ACCEPT)
-            .header("User-Agent", USER_AGENT)
-            .header("Cookie", cookie)
-            .send()
-            .await
+        let Some(tool) = captures
+            .get(1)
+            .and_then(|value| value.as_str().parse().ok())
         else {
             continue;
         };
-        for header in response.headers().get_all(reqwest::header::SET_COOKIE) {
-            if let Ok(value) = header.to_str() {
-                session.merge_set_cookie(value, &url);
-            }
+        let label = anchor.text().collect::<String>();
+        if ["게시판", "board", "강의자료", "주차학습", "모듈"]
+            .iter()
+            .any(|needle| label.to_ascii_lowercase().contains(needle))
+        {
+            return Ok(tool);
         }
-        if session.token("xn_api_token").is_some() {
-            break;
-        }
+        fallback.get_or_insert(tool);
     }
+    fallback.ok_or(EclassError::LearningxTokenMissing)
+}
+
+async fn get_text(
+    session: &Session,
+    client: &reqwest::Client,
+    url: Url,
+) -> Result<String, EclassError> {
+    let response = authorized_get(session, client, url.clone()).await?;
+    if response.url().path().to_ascii_lowercase().contains("login") {
+        return Err(EclassError::LoginRedirect);
+    }
+    if !response.status().is_success() {
+        return Err(EclassError::Http(response.status().as_u16()));
+    }
+    response.text().await.map_err(|_| EclassError::Network)
+}
+
+async fn authorized_get(
+    session: &Session,
+    client: &reqwest::Client,
+    url: Url,
+) -> Result<reqwest::Response, EclassError> {
+    let cookie = session
+        .cookie_header(&url)
+        .ok_or(EclassError::CanvasSessionExpired)?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, JSON_ACCEPT)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await?;
+    if matches!(response.status().as_u16(), 401 | 403) {
+        return Err(EclassError::CanvasSessionExpired);
+    }
+    Ok(response)
+}
+
+async fn decode_canvas_prefix(response: reqwest::Response) -> Option<String> {
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if content_type.contains("html") {
+        return None;
+    }
+    let text = response.text().await.ok()?;
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    Some(
+        text.strip_prefix("while(1);")
+            .map_or(text, str::trim_start)
+            .to_string(),
+    )
+}
+
+fn lti_form(html: &str) -> Option<(String, Vec<(String, String)>)> {
+    let document = scraper::Html::parse_document(html);
+    let selector = scraper::Selector::parse("form#tool_form, form[action*='learningx']").ok()?;
+    let form = document.select(&selector).next()?;
+    let action = form.value().attr("action")?.to_string();
+    let input = scraper::Selector::parse("input[name]").ok()?;
+    let fields = form
+        .select(&input)
+        .filter_map(|input| {
+            let name = input.value().attr("name")?;
+            let value = input.value().attr("value").unwrap_or_default();
+            Some((
+                html_escape::decode_html_entities(name).into_owned(),
+                html_escape::decode_html_entities(value).into_owned(),
+            ))
+        })
+        .collect();
+    Some((
+        html_escape::decode_html_entities(&action).into_owned(),
+        fields,
+    ))
+}
+
+fn positive_id(value: &serde_json::Value) -> Option<u32> {
+    match value {
+        serde_json::Value::Number(number) => {
+            number.as_u64().and_then(|value| u32::try_from(value).ok())
+        }
+        serde_json::Value::String(text) => text.parse::<u32>().ok(),
+        _ => None,
+    }
+}
+
+/// Ask LearningX for its API token with the saved cookies.
+pub async fn ensure_learningx_token(session: &mut Session, base: &Url) {
+    let _ = mint_learningx_token(session, base, None, false).await;
 }
 
 #[cfg(test)]

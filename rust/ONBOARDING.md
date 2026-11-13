@@ -11,7 +11,10 @@ versioned by `schema_version` (currently `1`).
   "schema_version": 1,
   "session_state": "missing | expired | unavailable | authenticated",
   "authenticated": false,
+  "canvas_ok": false,
   "learningx_token": false,
+  "learningx_ok": false,
+  "learningx_token_age_secs": null,
   "courses_visible": null,
   "ready": false,
   "next_actions": [
@@ -37,7 +40,7 @@ asserts that the synthetic token and cookie name do not appear.
 | `RUN_ONBOARD` | No saved session | Ask the user to run `eclass-mcp onboard --client <client>` |
 | `SESSION_EXPIRED` | Session exists but is no longer accepted | Ask for `eclass-mcp login` |
 | `CHECK_CONNECTION` | Session could not be verified (network/profile) | Run `eclass-mcp doctor`, retry |
-| `OPEN_WEEKLY_LEARNING` | Canvas session works, LearningX token missing | `onboard`/`login` attempts an automated weekly-tab visit; fall back to the manual step |
+| `REFRESH_LEARNINGX_TOKEN` | Canvas session works, LearningX token missing | `eclass-mcp auth refresh --via aside` mints it from the LTI launch or the signed-in Aside browser |
 | `CHECK_ENROLLMENT` | Course list failed or is empty | Ask the user to verify enrollment/term or re-login |
 | `CONFIGURE_CLIENT` | Ready | Run `eclass-mcp config --client <client>` and restart MCP |
 
@@ -49,8 +52,9 @@ asserts that the synthetic token and cookie name do not appear.
    session-file contents in chat.
 3. Re-call `get_onboarding_status` after the user confirms. Do not infer
    success from a command exiting.
-4. If `OPEN_WEEKLY_LEARNING` remains, ask the user to open **주차학습 (모듈)**
-   once in the login browser, then run `eclass-mcp login --no-launch`.
+4. If `REFRESH_LEARNINGX_TOKEN` remains, run
+   `eclass-mcp auth refresh --via auto`. It first replays the LTI launch with
+   the saved Canvas cookies, then falls back to the signed-in Aside browser.
 5. If `ready=true`, call `eclass-mcp config --client <client>` and tell the
    user to restart the MCP connection.
 6. Read-only tools are the default. Submission remains a separate explicit
@@ -58,11 +62,17 @@ asserts that the synthetic token and cookie name do not appear.
 
 ## LearningX automation
 
-`login`/`onboard` first request `/learningx/main` and `/learningx/dashboard`
-with the saved cookies. If the API token is still absent, they open
-`/learningx/main` in the dedicated Chrome profile, then poll the profile
-cookie database for `xn_api_token`. If the browser automation fails, the status
-keeps `OPEN_WEEKLY_LEARNING` and the manual fallback is used.
+LearningX issues `xn_api_token` from an LTI launch on a course tool page. The
+Rust core reads the course page, finds the board/module tool, parses the
+`tool_form`, and posts it with the saved Canvas cookies. No browser is needed
+for this step. `eclass-mcp auth refresh --via http` runs exactly that flow.
+
+When the Canvas cookies are not usable, `--via aside` uses the signed-in Aside
+browser to read the token from the user's existing e-Class session. This avoids
+a second login and a dedicated profile.
+
+If neither path succeeds, the status keeps `REFRESH_LEARNINGX_TOKEN` and the
+agent asks the user to run `eclass-mcp login`.
 
 ## Session storage
 

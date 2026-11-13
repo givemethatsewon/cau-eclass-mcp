@@ -17,8 +17,8 @@ use crate::{
     mcp,
     service::EClassService,
     session::{
-        chrome_profile_dir, default_session_file, delete_session, load_session, login_from_profile,
-        refresh_from_profile, save_session,
+        Cookie, ORIGIN, chrome_profile_dir, default_session_file, delete_session, load_session,
+        login_from_profile, refresh_from_profile, save_session, verify_session,
     },
 };
 
@@ -68,6 +68,29 @@ enum Command {
         #[arg(long, default_value = "claude")]
         client: String,
     },
+    /// Refresh credentials without reopening the dedicated profile.
+    Auth {
+        #[command(subcommand)]
+        action: AuthCommand,
+    },
+    /// Inspect or prune files created by the download tools.
+    Downloads {
+        /// Keep only the newest N files (deletes the rest).
+        #[arg(long)]
+        keep: Option<usize>,
+        /// Report what would be removed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Mint a LearningX token (`auto`, `http`, or `aside`).
+    Refresh {
+        #[arg(long, default_value = "auto")]
+        via: String,
+    },
 }
 
 /// Run the CLI and return a process exit code.
@@ -105,7 +128,51 @@ pub async fn run() -> anyhow::Result<i32> {
             .await
         }
         Command::Config { client } => config(&client, session_file),
+        Command::Auth { action } => match action {
+            AuthCommand::Refresh { via } => auth_refresh(&via, session_file).await,
+        },
+        Command::Downloads { keep, dry_run } => downloads(keep, dry_run),
     }
+}
+
+fn downloads(keep: Option<usize>, dry_run: bool) -> anyhow::Result<i32> {
+    let dir = crate::service::default_output_dir();
+    let mut files = Vec::new();
+    if dir.exists() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if !metadata.is_file() {
+                continue;
+            }
+            files.push((entry.path(), metadata.len(), metadata.modified().ok()));
+        }
+    }
+    // Newest first; unknown timestamps sort last.
+    files.sort_by_key(|file| std::cmp::Reverse(file.2));
+    let bytes: u64 = files.iter().map(|(_, size, _)| *size).sum();
+    let mut removed = Vec::new();
+    if let Some(keep) = keep {
+        for (path, _, _) in files.iter().skip(keep) {
+            if !dry_run {
+                std::fs::remove_file(path)?;
+            }
+            removed.push(json!(
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            ));
+        }
+    }
+    print_json(&json!({
+        "directory": dir,
+        "files": files.len(),
+        "bytes": bytes,
+        "keep": keep,
+        "dry_run": dry_run,
+        "removed": removed.len(),
+        "removed_files": removed
+    }))?;
+    Ok(0)
 }
 
 async fn serve(session_file: Option<PathBuf>, profile: PathBuf) -> anyhow::Result<()> {
@@ -138,15 +205,23 @@ async fn doctor(session_file: Option<PathBuf>, profile: PathBuf) -> anyhow::Resu
                 session
             }
             Err(error) => {
+                checks["canvas_ok"] = json!(false);
+                checks["learningx_ok"] = json!(false);
                 checks["ok"] = json!(false);
+                checks["error_code"] = json!(error.code());
                 checks["error"] = json!(error.to_string());
+                checks["next_action"] = json!(error.next_action());
                 print_json(&checks)?;
                 return Ok(1);
             }
         },
         Err(error) => {
+            checks["canvas_ok"] = json!(false);
+            checks["learningx_ok"] = json!(false);
             checks["ok"] = json!(false);
+            checks["error_code"] = json!(error.code());
             checks["error"] = json!(error.to_string());
+            checks["next_action"] = json!(error.next_action());
             print_json(&checks)?;
             return Ok(1);
         }
@@ -158,23 +233,77 @@ async fn doctor(session_file: Option<PathBuf>, profile: PathBuf) -> anyhow::Resu
         Duration::from_secs(20),
     )?
     .with_profile_dir(profile);
-    match EClassService::new(Arc::new(transport), None, false)
-        .session_status()
-        .await
-    {
-        Ok(status) => {
-            checks["authenticated"] = status.get("authenticated").cloned().unwrap_or(json!(false));
-            checks["ok"] = json!(true);
-            print_json(&checks)?;
-            Ok(0)
-        }
-        Err(error) => {
-            checks["ok"] = json!(false);
-            checks["error"] = json!(error.to_string());
-            print_json(&checks)?;
-            Ok(1)
+    let service = EClassService::new(Arc::new(transport), None, false);
+    let canvas = service.session_status().await;
+    let canvas_ok = canvas
+        .as_ref()
+        .ok()
+        .and_then(|status| status.get("authenticated"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut learningx_ok = false;
+    let mut token_present = false;
+    let mut token_age = None;
+    let mut error_code = canvas.as_ref().err().map(EclassError::code);
+    let mut error_message = canvas.as_ref().err().map(ToString::to_string);
+    let mut next_action = canvas.as_ref().err().and_then(EclassError::next_action);
+    if canvas_ok {
+        let _ = service.transport().mint_learningx_token().await;
+        {
+            let status = service.onboarding_status().await;
+            token_present = status
+                .get("learningx_token")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            token_age = status.get("learningx_token_age_secs").cloned();
+            if let Ok(courses) = service.courses(None, None, false).await
+                && let Some(course_id) = courses
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        let year = chrono::Utc::now().format("%Y").to_string();
+                        items
+                            .iter()
+                            .find(|course| {
+                                course
+                                    .get("term")
+                                    .and_then(|term| term.get("name"))
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|name| name.contains(&year))
+                            })
+                            .or_else(|| items.first())
+                    })
+                    .and_then(|course| course.get("id"))
+                    .and_then(|value| match value {
+                        Value::Number(number) => number.as_u64(),
+                        Value::String(text) => text.parse::<u64>().ok(),
+                        _ => None,
+                    })
+                    .and_then(|value| u32::try_from(value).ok())
+            {
+                match service.boards(course_id).await {
+                    Ok(_) => learningx_ok = token_present,
+                    Err(error) => {
+                        learningx_ok = false;
+                        error_code = Some(error.code());
+                        error_message = Some(error.to_string());
+                        next_action = error.next_action();
+                    }
+                }
+            }
         }
     }
+    let ok = canvas_ok && learningx_ok;
+    checks["canvas_ok"] = json!(canvas_ok);
+    checks["learningx_ok"] = json!(learningx_ok);
+    checks["learningx_token"] = json!(token_present);
+    checks["learningx_token_age_secs"] = token_age.unwrap_or(Value::Null);
+    checks["ok"] = json!(ok);
+    checks["error_code"] = json!(error_code);
+    checks["error"] = json!(error_message);
+    checks["next_action"] = json!(next_action);
+    print_json(&checks)?;
+    Ok(if ok { 0 } else { 1 })
 }
 
 fn browser_id(executable: &Path) -> String {
@@ -221,20 +350,13 @@ async fn login_flow(
             profile.display()
         );
     }
-    let mut session =
-        login_from_profile(&profile, &id, Duration::from_secs_f64(timeout.max(1.0))).await?;
-    if session.token("xn_api_token").is_none()
-        && let Some(executable) = &executable
-    {
-        let _ = launch_browser(
-            executable,
-            &profile,
-            "https://eclass3.cau.ac.kr/learningx/main",
-        );
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        if let Ok(refreshed) = refresh_from_profile(&profile, &id).await {
-            session = refreshed;
-        }
+    let mut session = if no_launch {
+        refresh_from_profile(&profile, &id).await?
+    } else {
+        login_from_profile(&profile, &id, Duration::from_secs_f64(timeout.max(1.0))).await?
+    };
+    if let Ok(base) = url::Url::parse(ORIGIN) {
+        let _ = crate::session::mint_learningx_token(&mut session, &base, None, true).await;
     }
     let path = save_session(
         &mut session,
@@ -251,18 +373,119 @@ async fn login(
     session_file: Option<PathBuf>,
 ) -> anyhow::Result<i32> {
     let profile_label = profile_dir.display().to_string();
-    let (session, path) =
+    let (mut session, path) =
         login_flow(browser_path, profile_dir, timeout, no_launch, session_file).await?;
+    let canvas_ok = verify_session(&session).await;
+    if canvas_ok
+        && let Ok(base) = url::Url::parse(ORIGIN)
+        && let Ok(true) =
+            crate::session::mint_learningx_token(&mut session, &base, None, true).await
+    {
+        let _ = save_session(&mut session, &path);
+    }
+    let learningx_token = session.token("xn_api_token").is_some();
+    let ok = canvas_ok && learningx_token;
     print_json(&json!({
-        "ok": true,
-        "authenticated": true,
+        "ok": ok,
+        "canvas_ok": canvas_ok,
+        "authenticated": canvas_ok,
         "session_file": path,
         "profile_dir": profile_label,
         "browser": session.browser,
         "saved_at": session.saved_at,
-        "learningx_token": session.token("xn_api_token").is_some()
+        "learningx_token": learningx_token,
+        "learningx_token_age_secs": session.learningx_token_age_secs(),
+        "next_action": (!ok).then_some("eclass-mcp auth refresh --via aside")
     }))?;
-    Ok(0)
+    Ok(if ok { 0 } else { 1 })
+}
+
+async fn auth_refresh(via: &str, session_file: Option<PathBuf>) -> anyhow::Result<i32> {
+    if !matches!(via, "auto" | "http" | "aside") {
+        anyhow::bail!("--via must be one of auto, http, aside");
+    }
+    let path = session_file.unwrap_or_else(default_session_file);
+    let mut session = load_session(&path)?.unwrap_or_else(|| {
+        crate::session::Session::from_browser(Vec::new(), Some("aside".to_string()))
+    });
+    let mut token = None;
+    let mut method = None;
+    let mut http_error = None;
+    if via != "aside" {
+        let transport = HttpTransport::new(
+            session.clone(),
+            path.clone(),
+            url::Url::parse(ORIGIN)?,
+            Duration::from_secs(20),
+        )?
+        .with_profile_dir(expand_home(&chrome_profile_dir()));
+        match transport.refresh_learningx_token().await {
+            Ok(true) => {
+                session = transport.session().unwrap_or(session);
+                token = session.token("xn_api_token").map(str::to_string);
+                method = Some("http");
+            }
+            Ok(false) => {
+                http_error = Some("the LTI launch did not return a token".to_string());
+            }
+            Err(error) => {
+                http_error = Some(error.to_string());
+            }
+        }
+    }
+    if token.is_none() && via != "http" {
+        match crate::aside::learningx_token().await {
+            Ok(value) => {
+                token = Some(value);
+                method = Some("aside");
+            }
+            Err(error) => {
+                if http_error.is_none() {
+                    http_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+    if let Some(token) = token {
+        session.upsert(Cookie {
+            name: "xn_api_token".to_string(),
+            value: token,
+            domain: "eclass3.cau.ac.kr".to_string(),
+            path: "/".to_string(),
+            expires: None,
+            secure: true,
+            http_only: false,
+            same_site: Some("Lax".to_string()),
+            host_only: None,
+        });
+        session.learningx_token_at = Some(crate::service::iso_now());
+    } else {
+        session
+            .cookies
+            .retain(|cookie| cookie.name != "xn_api_token");
+    }
+    let saved = save_session(&mut session, &path)?;
+    let canvas_ok = verify_session(&session).await;
+    let learningx_token = session.token("xn_api_token").is_some();
+    let ok = canvas_ok && learningx_token;
+    print_json(&json!({
+        "ok": ok,
+        "via": via,
+        "method": method,
+        "canvas_ok": canvas_ok,
+        "learningx_token": learningx_token,
+        "learningx_token_age_secs": session.learningx_token_age_secs(),
+        "session_file": saved,
+        "error": http_error,
+        "next_action": if !canvas_ok {
+            Some("eclass-mcp login")
+        } else if !learningx_token {
+            Some("eclass-mcp auth refresh --via aside")
+        } else {
+            None
+        }
+    }))?;
+    Ok(if ok { 0 } else { 1 })
 }
 
 async fn onboard(
@@ -309,6 +532,7 @@ async fn onboard(
         Duration::from_secs(20),
     )?
     .with_profile_dir(profile);
+    let _ = transport.mint_learningx_token().await;
     let status = EClassService::new(Arc::new(transport), None, false)
         .onboarding_status()
         .await;

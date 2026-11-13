@@ -10,7 +10,7 @@ e-Class 로그인은 브라우저에서 한 번만 합니다. 강좌, 공지, �
 
 | 구성 | 역할 |
 |---|---|
-| Rust `eclass-mcp` | MCP stdio 서버, 27개 도구, HTTP 조회·다운로드·PDF 텍스트·과제 제출 |
+| Rust `eclass-mcp` | MCP stdio 서버, 28개 도구, HTTP 조회·다운로드·PDF 텍스트·과제 제출 |
 | Python `eclass-oz-export` (선택) | OZ 뷰어의 PDF 저장을 Playwright로 실행하는 헬퍼 |
 | `session.json` | 두 구성이 공유하는 `.cau.ac.kr` 쿠키 저장소. 소유자 전용 `0600` |
 
@@ -50,7 +50,7 @@ eclass-mcp doctor
 eclass-mcp config --client claude
 ```
 
-`doctor`는 세션 파일과 로그인, 전송 방식을 확인해 `ok: true/false`만 보여 줍니다. 이름·학번·쿠키는 찍지 않습니다. `config`는 설정을 출력하고 클라이언트 파일은 건드리지 않습니다.
+`doctor`는 Canvas 세션과 LearningX 토큰을 따로 확인해 `canvas_ok`, `learningx_ok`, `next_action`을 보여 줍니다. 이름·학번·쿠키는 찍지 않습니다. `config`는 설정을 출력하고 클라이언트 파일은 건드리지 않습니다.
 
 ### 로그인 옵션
 
@@ -67,6 +67,23 @@ eclass-mcp logout
 ```
 
 `ECLASS_BROWSER_PATH`에 실행 파일 경로를 지정해도 됩니다. 로그인 프로필은 전용으로 두세요. 로그인 뒤 브라우저를 닫아도 조회와 다운로드는 계속 됩니다. 세션이 만료되면 `login`을 다시 실행합니다.
+
+### LearningX 토큰
+
+LearningX 게시판과 주차학습 API는 `xn_api_token`이 필요합니다. MCP는 저장된 Canvas 쿠키로 강좌의 LTI 폼을 다시 실행해 토큰을 스스로 발급하므로, 보통은 브라우저를 다시 열 필요가 없습니다.
+
+```sh
+# 브라우저 없이 LTI를 재실행해 토큰 발급
+eclass-mcp auth refresh --via http
+
+# 이미 로그인된 Aside 브라우저에서 토큰만 회수 (새 로그인 없음)
+eclass-mcp auth refresh --via aside
+
+# 둘 다 시도
+eclass-mcp auth refresh --via auto
+```
+
+`auth refresh`는 Canvas 쿠키가 살아 있으면 `canvas_ok: true`, 토큰을 얻으면 `learningx_token: true`를 반환합니다. `doctor`도 같은 두 값을 따로 보여 줍니다.
 
 ### 저장 위치
 
@@ -131,13 +148,13 @@ eclass-mcp config --client codex
 
 ## 도구
 
-Rust MCP에는 27개 도구가 있습니다. 조회와 다운로드, 제출 도구 26개에 `get_onboarding_status`를 더했습니다.
+Rust MCP에는 28개 도구가 있습니다. 조회와 다운로드, 제출 도구 27개에 `get_onboarding_status`를 더했습니다.
 
 | 기능 | 도구 |
 |---|---|
 | 세션·강좌·요약 | `get_session_status`, `get_onboarding_status`, `list_courses`, `get_briefing`, `list_todo` |
 | 주차학습 | `list_learning_items` |
-| 통합 자료 | `list_materials`, `download_material`, `read_material` |
+| 통합 자료 | `list_materials`, `get_week_materials`, `download_material`, `read_material` |
 | 공지 | `list_announcements`, `get_announcement` |
 | 과제·마감 | `list_assignments`, `get_assignment`, `list_deadlines`, `get_submission` |
 | 강의 계획서 | `get_syllabus`, `download_syllabus_pdf` |
@@ -146,7 +163,11 @@ Rust MCP에는 27개 도구가 있습니다. 조회와 다운로드, 제출 도�
 | 다운로드 | `download_attachment`, `get_video_download_info`, `download_video_original` |
 | 제출 | `prepare_submission`, `submit_assignment` |
 
-`download_syllabus_pdf`만 OZ 헬퍼가 있어야 동작합니다. 나머지 26개는 Rust 바이너리만으로 동작합니다.
+`list_materials`는 Commons 주차 영상, Canvas 파일, LearningX 게시판 첨부(강의자료실)를 한 목록으로 합칩니다. `week`를 생략하면 `current_week`를 함께 알려 주고, `get_week_materials`는 자료가 있는 마지막 주차를 한 번에 가져옵니다. 게시판 첨부에는 `board:<course>:<board>:<post>:<attachment>` 형식의 `resource_id`가 붙어 `download_material`과 `read_material`에 그대로 쓸 수 있습니다.
+
+목록 응답은 `items`, `complete`, `has_more`, `next`, `next_param`으로 통일되어 있고, `next`는 `next_param`이 가리키는 인자에 그대로 넣습니다. `list_courses`는 기본으로 현재 학기만 반환하며 `all_terms=true`로 넓힙니다. 과목명이 여러 과목과 일치하면 `AMBIGUOUS_COURSE`와 `details.candidates`를 반환하고, 알 수 없는 인자는 `INVALID_ARGUMENT`로 거부합니다. 내려받은 파일은 `eclass-mcp downloads --keep 200`으로 정리할 수 있습니다.
+
+`download_syllabus_pdf`만 OZ 헬퍼가 있어야 동작합니다. 나머지 27개는 Rust 바이너리만으로 동작합니다.
 
 ### 온보딩 상태
 
@@ -154,7 +175,7 @@ Rust MCP에는 27개 도구가 있습니다. 조회와 다운로드, 제출 도�
 
 - `RUN_ONBOARD`: 아직 로그인 전
 - `SESSION_EXPIRED`: 세션 만료
-- `OPEN_WEEKLY_LEARNING`: LearningX 토큰이 없음
+- `REFRESH_LEARNINGX_TOKEN`: LearningX 토큰이 없음
 - `CHECK_ENROLLMENT`: 강좌 조회 실패 또는 0개
 - `CONFIGURE_CLIENT`: 준비 완료
 

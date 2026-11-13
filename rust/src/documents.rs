@@ -49,9 +49,12 @@ pub struct PdfRead {
     pub text_complete: bool,
     pub document_complete: bool,
     pub has_more: bool,
+    /// Page to request next; pair it with `next_offset`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page: Option<u32>,
-    pub next_offset: usize,
+    /// Character offset within `next_page`; omitted when nothing remains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
     pub warnings: Vec<String>,
 }
 
@@ -133,7 +136,7 @@ pub fn read_pdf(
     let mut failed = Vec::new();
     let mut remaining = max_chars;
     let mut next_page = None;
-    let mut next_offset = 0;
+    let mut next_offset = None;
 
     for number in start_page..=stop {
         let text = match document.extract_text_chunks(&[number]) {
@@ -173,11 +176,12 @@ pub fn read_pdf(
         });
         if end < total {
             next_page = Some(number);
-            next_offset = end;
+            next_offset = Some(end);
             break;
         }
         if remaining == 0 && number < stop {
             next_page = Some(number + 1);
+            next_offset = Some(0);
             break;
         }
     }
@@ -185,6 +189,7 @@ pub fn read_pdf(
     let range_complete = next_page.is_none();
     if range_complete && stop < page_count {
         next_page = Some(stop + 1);
+        next_offset = Some(0);
     }
     let mut warnings = Vec::new();
     if !blank.is_empty() {
@@ -231,7 +236,8 @@ pub fn sanitize_text(value: &str) -> String {
 }
 
 fn safe_url(value: &str) -> String {
-    let Ok(mut url) = Url::parse(value) else {
+    let decoded = html_escape::decode_html_entities(value).into_owned();
+    let Ok(mut url) = Url::parse(&decoded) else {
         return value.to_string();
     };
     if !matches!(url.scheme(), "http" | "https") {

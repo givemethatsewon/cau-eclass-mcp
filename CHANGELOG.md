@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.0 — unreleased
+
+- **입력 검증**: MCP 서버가 `inputSchema`를 직접 강제합니다. 오타 난 인자(`max_pages` 오타 등)와 누락된 필수 인자, 잘못된 타입은 `INVALID_ARGUMENT`로 거부하고 허용 인자 목록을 함께 알려 줍니다. 그동안 클라이언트가 조용히 버리던 값 때문에 필터가 무시되던 문제를 없앴습니다.
+- **과목명 모호성**: `course=` 이름이 여러 과목과 일치하면 첫 결과를 고르지 않고 `AMBIGUOUS_COURSE`와 `details.candidates[].course_id`를 반환합니다. 현재 학기를 먼저 찾고, 그다음 전체 학기를 봅니다.
+- **현재 학기 기본값**: `list_courses`가 기본으로 오늘 기준 학기만 압축 반환(과목당 약 950B → 120B)하고 `all_terms=true`로 넓힙니다. `get_briefing`도 같은 기준을 씁니다.
+- **목록 봉투 통일**: 모든 목록이 `items`, `complete`, `has_more`, `next`, `next_param`을 사용합니다. `data`(게시판)와 `next_cursor`(재사용 불가 URL)를 제거했습니다.
+- **브리핑 시간창**: `windows.deadlines`(앞으로 `days`일)와 `windows.announcements`(최근 `days`일)를 분리하고, 이미 지난 마감은 `overdue`로, 창 밖 마감은 `deadlines_beyond_window`로 집계합니다.
+- **주차 기본값**: `get_week_materials`가 자료가 있는 마지막 주차를 고르고 `weeks_with_materials`, `course_weeks`를 반환합니다. 과정에 없는 주차는 빈 목록 대신 사용 가능한 주차를 안내합니다.
+- **계획서 대안 안내**: `get_syllabus`가 `available`과 `suggested_tool`(`download_syllabus_pdf`)을 반환해 OZ 뷰어 문서에서 막다른 길로 끝나지 않습니다.
+- **PDF 커서**: `max_pages`(1–20)를 실제로 적용하고, `next_offset`을 `has_more=true`일 때만 `next_page`와 쌍으로 반환합니다.
+- **다운로드 정리**: `eclass-mcp downloads [--keep N] [--dry-run]`으로 내려받은 파일 수·용량을 확인하고 오래된 파일을 정리합니다.
+- **게시판 내성**: 상세 조회가 실패한 게시글 하나가 게시판 전체 자료 목록을 실패시키지 않습니다.
+- **LearningX 토큰 자가 복구**: 저장된 Canvas 쿠키로 강좌의 LTI 폼을 다시 POST해 `xn_api_token`을 발급. 브라우저·재로그인 없이 `auth refresh --via http`로 동작하고, 401 응답에서 자동 재시도.
+- **Aside 토큰 브리지**: `auth refresh --via aside`가 사용자가 이미 로그인한 Aside 브라우저에서 토큰만 회수. 전용 Chrome 프로필 로그인을 강요하지 않음.
+- **정직한 상태 진단**: `doctor`가 `canvas_ok`, `learningx_ok`, `learningx_token_age_secs`, `error_code`, `next_action`을 분리해 반환. Canvas 쿠키는 살아 있는데 LearningX만 죽은 상태를 구분.
+- **자료 통합**: `list_materials`가 Commons 영상, Canvas 파일, LearningX 게시판(강의자료실) 첨부를 합침. `board:<course>:<board>:<post>:<attachment>` resource ID로 다운로드·PDF 읽기 지원. `get_week_materials` 추가.
+- **현재 주차**: `list_learning_items`/`list_materials`가 `current_week`와 `weeks`를 반환하고, 게시판 제목의 `N주차`를 인식.
+- **응답 위생**: `list_assignments` 기본 compact(`detail=true`로 원본), 게시판 시각 KST 병기, `get_briefing` 현재 학기 우선 정렬·이전 학기 제외, OZ 계획서 URL의 `&amp;` 복원.
+- **오류 코드**: `CANVAS_SESSION_EXPIRED`, `LEARNINGX_TOKEN_MISSING`, `LEARNINGX_UNAUTHORIZED`, `PERMISSION_DENIED`, `COURSE_NOT_FOUND` 등 안정 코드와 `next_action`을 MCP 오류에 포함.
+- `auth refresh --via auto|http|aside`, 과목명으로 `course_id`를 대신하는 `course` 인자 추가.
+
 ## 0.5.0 — 2026-11-12
 
 - **Rust MCP가 기본 서버**: FastMCP와 Python 전체 MCP 서버를 제거하고 Rust stdio JSON-RPC 서버 27개 도구로 통일.

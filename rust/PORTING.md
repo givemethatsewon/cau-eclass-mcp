@@ -47,7 +47,7 @@ The Python package is now only an optional OZ PDF helper.
 - **Only HTTP transport is available.** FastMCP, Aside, and CDP were removed.
   Rust reads Chrome profile cookies for the one-time `login` and session
   refresh; no remote debugging port is opened.
-- **MCP protocol version is `2024-11-05`.** The Rust server exposes 27 tools.
+- **MCP protocol version is `2024-11-05`.** The Rust server exposes 28 tools.
   The legacy FastMCP client accepted the server before FastMCP was removed;
   current clients use raw stdio JSON-RPC.
 - **Single-account process.** Like the Python service, caches and the saved
@@ -55,8 +55,8 @@ The Python package is now only an optional OZ PDF helper.
 
 ## Preserved quirks
 
-- `observed_at` + `result` envelope, `complete` / `next_cursor` fields, and
-  Asia/Seoul `_seoul` date fields.
+- `observed_at` + `result` envelope, the `items` / `complete` / `has_more` /
+  `next` / `next_param` list envelope, and Asia/Seoul `_seoul` date fields.
 - `resource_id` remains `commons:<course>:<item>` / `canvas:<course>:<file>`.
 - PDF text offsets are character offsets, not byte offsets.
 - Downloads never overwrite an existing path; failed downloads remove the

@@ -28,10 +28,12 @@ use crate::{
 const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HTML_BYTES: usize = 5 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
-const DEFAULT_DOWNLOAD_HOSTS: [&str; 3] = [
+const DEFAULT_DOWNLOAD_HOSTS: [&str; 5] = [
     "eclass3.cau.ac.kr",
     "ocs.cau.ac.kr",
     "cau-cms-object.cdn.gov-ntruss.com",
+    "kr.object.gov-ncloudstorage.com",
+    "kr.object.ncloudstorage.com",
 ];
 
 /// One successful GET response.
@@ -199,6 +201,37 @@ impl HttpTransport {
         self.cache.clear().await;
     }
 
+    /// Mint a fresh LearningX token from the current Canvas session.
+    ///
+    /// This is browser-free: it replays the LTI launch from the course page.
+    pub async fn mint_learningx_token(&self) -> Result<bool, EclassError> {
+        self.mint_learningx_token_inner(false).await
+    }
+
+    /// Re-mint even when a token cookie is already present (used after a 401).
+    pub async fn refresh_learningx_token(&self) -> Result<bool, EclassError> {
+        self.mint_learningx_token_inner(true).await
+    }
+
+    async fn mint_learningx_token_inner(&self, force: bool) -> Result<bool, EclassError> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| EclassError::InvalidSession)?
+            .clone();
+        if !crate::session::mint_learningx_token(&mut session, &self.base, None, force).await? {
+            return Ok(false);
+        }
+        save_session(&mut session, &self.session_file)?;
+        *self
+            .session
+            .lock()
+            .map_err(|_| EclassError::InvalidSession)? = session;
+        self.has_session.store(true, Ordering::Relaxed);
+        self.cache.clear().await;
+        Ok(true)
+    }
+
     /// Refresh the session from the dedicated Chrome profile and persist it.
     pub async fn refresh(&self) -> Result<(), EclassError> {
         let browser = self
@@ -273,11 +306,23 @@ impl HttpTransport {
             match result {
                 Ok(response) => {
                     if response.status == 401 && attempt == 0 {
-                        self.try_refresh().await;
+                        // Student accounts usually cannot list course files; that
+                        // 401 is a permission boundary, not an expired session.
+                        if path.contains("/files") && !learningx {
+                            return Err(EclassError::PermissionDenied);
+                        }
+                        let refreshed_token = learningx && self.try_refresh_learningx().await;
+                        if !refreshed_token {
+                            self.try_refresh().await;
+                        }
                         continue;
                     }
                     if response.status == 401 {
-                        return Err(EclassError::SessionExpired);
+                        return Err(if learningx {
+                            EclassError::LearningxUnauthorized
+                        } else {
+                            EclassError::CanvasSessionExpired
+                        });
                     }
                     if response.status == 403 {
                         return Err(EclassError::Http(403));
@@ -301,6 +346,13 @@ impl HttpTransport {
             return false;
         }
         self.refresh().await.is_ok()
+    }
+
+    async fn try_refresh_learningx(&self) -> bool {
+        if !self.auto_refresh {
+            return false;
+        }
+        self.refresh_learningx_token().await.unwrap_or(false)
     }
 
     async fn request_once(

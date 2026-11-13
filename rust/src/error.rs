@@ -1,5 +1,6 @@
 //! Errors shared by the Rust core.
 
+use serde_json::{Value, json};
 use thiserror::Error;
 
 /// A failure that can be returned to an MCP client.
@@ -11,12 +12,32 @@ pub enum EclassError {
     Http(u16),
     #[error("e-Class session expired; run `eclass-mcp login` while the browser is open")]
     SessionExpired,
+    #[error(
+        "Canvas session expired; run `eclass-mcp login` or `eclass-mcp auth refresh --via aside`"
+    )]
+    CanvasSessionExpired,
+    #[error("LearningX API token is missing; run `eclass-mcp auth refresh --via aside`")]
+    LearningxTokenMissing,
+    #[error("LearningX rejected the API token; run `eclass-mcp auth refresh --via aside`")]
+    LearningxUnauthorized,
     #[error("e-Class redirected to login; run `eclass-mcp login`")]
     LoginRedirect,
     #[error("expected JSON was not returned; login may have expired")]
     ExpectedJson,
     #[error("no authenticated user profile was returned")]
     NoProfile,
+    #[error("the account is not allowed to access this resource")]
+    PermissionDenied,
+    #[error("course was not found; pass course_id or an exact course name")]
+    CourseNotFound,
+    #[error("course `{query}` matches {count} courses; pass course_id")]
+    AmbiguousCourse {
+        query: String,
+        count: usize,
+        candidates: Value,
+    },
+    #[error("{0}")]
+    InvalidArgument(String),
     #[error("only same-origin relative e-Class paths are allowed")]
     InvalidPath,
     #[error("cross-origin e-Class redirect rejected")]
@@ -99,6 +120,111 @@ pub enum EclassError {
     Url(#[from] url::ParseError),
     #[error(transparent)]
     Pdf(#[from] lopdf::Error),
+}
+
+impl EclassError {
+    /// Stable machine-readable error code for MCP clients.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Network => "NETWORK",
+            Self::Http(401) => "HTTP_UNAUTHORIZED",
+            Self::Http(403) => "PERMISSION_DENIED",
+            Self::Http(404) => "NOT_FOUND",
+            Self::Http(_) => "HTTP_ERROR",
+            Self::SessionExpired => "SESSION_EXPIRED",
+            Self::CanvasSessionExpired => "CANVAS_SESSION_EXPIRED",
+            Self::LearningxTokenMissing => "LEARNINGX_TOKEN_MISSING",
+            Self::LearningxUnauthorized => "LEARNINGX_UNAUTHORIZED",
+            Self::LoginRedirect => "LOGIN_REQUIRED",
+            Self::ExpectedJson => "EXPECTED_JSON",
+            Self::NoProfile => "NO_PROFILE",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::CourseNotFound => "COURSE_NOT_FOUND",
+            Self::AmbiguousCourse { .. } => "AMBIGUOUS_COURSE",
+            Self::InvalidArgument(_) => "INVALID_ARGUMENT",
+            Self::InvalidPath => "INVALID_ARGUMENT",
+            Self::CrossOrigin => "CROSS_ORIGIN",
+            Self::NotAFile => "NOT_A_FILE",
+            Self::DownloadTooLarge => "DOWNLOAD_TOO_LARGE",
+            Self::SizeMismatch => "SIZE_MISMATCH",
+            Self::UntrustedHost => "UNTRUSTED_HOST",
+            Self::TooManyRedirects => "TOO_MANY_REDIRECTS",
+            Self::MaterialNotFound => "MATERIAL_NOT_FOUND",
+            Self::MaterialUnavailable => "MATERIAL_UNAVAILABLE",
+            Self::UnsupportedMaterial => "UNSUPPORTED_MATERIAL",
+            Self::PdfUnavailable => "PDF_UNAVAILABLE",
+            Self::VideoUnavailable => "VIDEO_UNAVAILABLE",
+            Self::UnsupportedVideo => "UNSUPPORTED_VIDEO",
+            Self::PlaybackRequired => "PLAYBACK_REQUIRED",
+            Self::PlaybackUnsupported => "PLAYBACK_UNSUPPORTED",
+            Self::InvalidPdf => "INVALID_PDF",
+            Self::PageRange(_) => "PAGE_RANGE",
+            Self::InvalidPageRange => "INVALID_ARGUMENT",
+            Self::InvalidMaxChars => "INVALID_ARGUMENT",
+            Self::BrowserOnly(_) => "BROWSER_ONLY",
+            Self::OzHelper(_) => "OZ_HELPER",
+            Self::UnknownTool(_) => "UNKNOWN_TOOL",
+            Self::InvalidSession => "INVALID_SESSION",
+            Self::NoSession => "NO_SESSION",
+            Self::BrowserProfileUnavailable => "BROWSER_PROFILE_UNAVAILABLE",
+            Self::CookieStoreUnavailable => "COOKIE_STORE_UNAVAILABLE",
+            Self::NotLoggedIn => "NOT_LOGGED_IN",
+            Self::BrowserNotFound => "BROWSER_NOT_FOUND",
+            Self::ResponseTooLarge => "RESPONSE_TOO_LARGE",
+            Self::MetadataFailed => "METADATA_FAILED",
+            Self::MetadataTooLarge => "METADATA_TOO_LARGE",
+            Self::PdfViewerUnsupported => "PDF_VIEWER_UNSUPPORTED",
+            Self::PlaybackMetadataUnsupported => "PLAYBACK_METADATA_UNSUPPORTED",
+            Self::UnexpectedList => "UNEXPECTED_LIST",
+            Self::TooManyPlans => "TOO_MANY_PLANS",
+            Self::SessionRead => "SESSION_READ",
+            Self::Io(_) => "IO",
+            Self::Json(_) => "JSON",
+            Self::Url(_) => "URL",
+            Self::Pdf(_) => "PDF",
+        }
+    }
+
+    /// Suggested recovery command, when one exists.
+    #[must_use]
+    pub fn next_action(&self) -> Option<&'static str> {
+        match self {
+            Self::SessionExpired
+            | Self::CanvasSessionExpired
+            | Self::LoginRedirect
+            | Self::NoSession
+            | Self::NotLoggedIn
+            | Self::NoProfile => Some("eclass-mcp login"),
+            Self::LearningxTokenMissing | Self::LearningxUnauthorized => {
+                Some("eclass-mcp auth refresh --via aside")
+            }
+            Self::BrowserProfileUnavailable | Self::CookieStoreUnavailable | Self::SessionRead => {
+                Some("eclass-mcp login --no-launch")
+            }
+            Self::BrowserNotFound => Some("eclass-mcp login --browser-path <path>"),
+            Self::CourseNotFound => Some("use list_courses to find a course_id"),
+            Self::AmbiguousCourse { .. } => {
+                Some("pass course_id from error.details.candidates[].course_id")
+            }
+            Self::MaterialNotFound => {
+                Some("call list_materials and pass its resource_id unchanged")
+            }
+            Self::Http(404) => {
+                Some("verify the course_id or resource id with list_courses or list_materials")
+            }
+            _ => None,
+        }
+    }
+
+    /// Extra machine-readable context for the error payload.
+    #[must_use]
+    pub fn details(&self) -> Option<Value> {
+        match self {
+            Self::AmbiguousCourse { candidates, .. } => Some(json!({"candidates": candidates})),
+            _ => None,
+        }
+    }
 }
 
 impl From<reqwest::Error> for EclassError {

@@ -9,14 +9,13 @@ Python package is now only the optional OZ PDF helper.
   TTL cache with one loader per key, course/todo/briefing, weekly materials,
   Commons PDF and video downloads, Canvas files, assignments/deadlines,
   announcements, syllabus text, boards, groups, PDF validation/page text,
-  Canvas upload/submission over HTTP, and 27 MCP tool schemas (the Python 26
-  plus `get_onboarding_status`).
+  Canvas upload/submission over HTTP, and 28 MCP tool schemas.
 - **Optional Python helper:** OZ native PDF export (`download_syllabus_pdf`).
   Rust invokes `eclass-oz-export` (Playwright) only for this tool; it returns a
   clear error when the helper is not installed.
 - **Removed:** the legacy `aside`/CDP transport switch and the FastMCP Python
-  server. Rust always uses the saved HTTP session; `login` is the only browser
-  step for reads and downloads.
+  server. Rust always uses the saved HTTP session. `login` creates the Canvas
+  session; the LearningX token is minted from the LTI launch without a browser.
 
 ## Build and run
 
@@ -42,9 +41,9 @@ Then:
 ./target/release/eclass-mcp-rs serve
 ```
 
-`login`, `onboard`, `logout`, `doctor`, `config`, and `serve` are available
-directly in Rust too. `onboard` opens a dedicated Chromium profile, waits for
-the user to sign in, verifies the profile and course list, checks the
+`login`, `auth refresh`, `onboard`, `logout`, `doctor`, `config`, and `serve`
+are available directly in Rust too. `onboard` opens a dedicated Chromium profile, waits for
+the user to sign in, verifies the profile and course list, mints the
 LearningX token, and prints structured next actions. The MCP tool
 `get_onboarding_status` exposes the same state to an agent. The schema and
 action codes are documented in [ONBOARDING.md](ONBOARDING.md).

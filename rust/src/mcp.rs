@@ -1,4 +1,4 @@
-//! Minimal MCP stdio server with 27 tools; the Python OZ helper is separate.
+//! Minimal MCP stdio server with 28 tools; the Python OZ helper is separate.
 
 use std::io::Write;
 
@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::{
     error::EclassError,
-    service::{EClassService, clean, iso_now},
+    service::{EClassService, clean, iso_now, list_response},
 };
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -95,10 +95,26 @@ async fn handle_request(service: &EClassService, request: Value) -> Option<Value
                     "structuredContent": value,
                     "isError": false
                 })),
-                Err(error) => Ok(json!({
-                    "content": [{"type": "text", "text": error.to_string()}],
-                    "isError": true
-                })),
+                Err(error) => {
+                    let mut payload = json!({
+                        "error": {
+                            "code": error.code(),
+                            "message": error.to_string(),
+                            "next_action": error.next_action()
+                        }
+                    });
+                    if let Some(details) = error.details()
+                        && let Some(object) =
+                            payload.get_mut("error").and_then(Value::as_object_mut)
+                    {
+                        object.insert("details".to_string(), details);
+                    }
+                    Ok(json!({
+                        "content": [{"type": "text", "text": serde_json::to_string(&payload).unwrap_or_else(|_| error.to_string())}],
+                        "structuredContent": payload,
+                        "isError": true
+                    }))
+                }
             }
         }
         _ => Err((-32601, format!("method not found: {method}"))),
@@ -118,6 +134,7 @@ async fn call_tool(
     name: &str,
     args: &Value,
 ) -> Result<Value, EclassError> {
+    validate_args(name, args)?;
     let value = match name {
         "get_session_status" => service.session_status().await?,
         "get_onboarding_status" => service.onboarding_status().await,
@@ -126,6 +143,9 @@ async fn call_tool(
                 .courses(
                     args.get("query").and_then(Value::as_str),
                     args.get("term").and_then(Value::as_str),
+                    args.get("all_terms")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 )
                 .await?
         }
@@ -141,7 +161,7 @@ async fn call_tool(
         "list_learning_items" => {
             service
                 .learning_items(
-                    arg_u32(args, "course_id").ok_or(EclassError::InvalidPath)?,
+                    arg_course_id(service, args).await?,
                     arg_u32(args, "week"),
                     args.get("query").and_then(Value::as_str),
                     args.get("content_type").and_then(Value::as_str),
@@ -152,7 +172,7 @@ async fn call_tool(
         "list_materials" => {
             service
                 .materials(
-                    arg_u32(args, "course_id").ok_or(EclassError::InvalidPath)?,
+                    arg_course_id(service, args).await?,
                     arg_u32(args, "week"),
                     args.get("query").and_then(Value::as_str),
                     args.get("content_type").and_then(Value::as_str),
@@ -161,17 +181,27 @@ async fn call_tool(
                 )
                 .await?
         }
+        "get_week_materials" => {
+            service
+                .week_materials(arg_course_id(service, args).await?, arg_u32(args, "week"))
+                .await?
+        }
         "download_material" => {
             let resource_id = arg_str(args, "resource_id")?;
             service.material_download(&resource_id).await?
         }
         "read_material" => {
             let resource_id = arg_str(args, "resource_id")?;
+            let start_page = arg_u32(args, "start_page").unwrap_or(1);
+            let max_pages = arg_u32(args, "max_pages").unwrap_or(10).clamp(1, 20);
+            // An explicit end_page wins; otherwise max_pages bounds the range.
+            let end_page =
+                arg_u32(args, "end_page").or_else(|| start_page.checked_add(max_pages - 1));
             let value = service
                 .material_read(
                     &resource_id,
-                    arg_u32(args, "start_page").unwrap_or(1),
-                    arg_u32(args, "end_page"),
+                    start_page,
+                    end_page,
                     arg_usize(args, "start_offset").unwrap_or(0),
                     arg_usize(args, "max_chars").unwrap_or(24_000),
                 )
@@ -198,9 +228,20 @@ async fn call_tool(
         }
         "list_assignments" => {
             let paged = service
-                .assignments(arg_u32(args, "course_id").ok_or(EclassError::InvalidPath)?)
+                .assignments(
+                    arg_course_id(service, args).await?,
+                    args.get("detail").and_then(Value::as_bool).unwrap_or(false),
+                )
                 .await?;
-            json!({"items": paged.items, "complete": paged.complete, "next_cursor": paged.next_cursor})
+            let truncated = paged.next_cursor.is_some();
+            let mut payload = list_response(paged.items, paged.complete && !truncated, None, None);
+            if truncated && let Some(object) = payload.as_object_mut() {
+                object.insert(
+                    "warnings".to_string(),
+                    json!(["more assignments exist beyond the page limit"]),
+                );
+            }
+            payload
         }
         "get_assignment" => {
             service
@@ -212,7 +253,7 @@ async fn call_tool(
         }
         "list_deadlines" => {
             service
-                .deadlines(arg_u32(args, "course_id").ok_or(EclassError::InvalidPath)?)
+                .deadlines(arg_course_id(service, args).await?)
                 .await?
         }
         "get_syllabus" => {
@@ -230,15 +271,11 @@ async fn call_tool(
                 )
                 .await?
         }
-        "list_boards" => {
-            service
-                .boards(arg_u32(args, "course_id").ok_or(EclassError::InvalidPath)?)
-                .await?
-        }
+        "list_boards" => service.boards(arg_course_id(service, args).await?).await?,
         "list_board_posts" => {
             service
                 .board_posts(
-                    arg_u32(args, "course_id").ok_or(EclassError::InvalidPath)?,
+                    arg_course_id(service, args).await?,
                     arg_u32(args, "board_id").ok_or(EclassError::InvalidPath)?,
                     arg_u32(args, "page").unwrap_or(1),
                 )
@@ -247,7 +284,7 @@ async fn call_tool(
         "get_board_post" => {
             service
                 .board_post(
-                    arg_u32(args, "course_id").ok_or(EclassError::InvalidPath)?,
+                    arg_course_id(service, args).await?,
                     arg_u32(args, "board_id").ok_or(EclassError::InvalidPath)?,
                     arg_u32(args, "post_id").ok_or(EclassError::InvalidPath)?,
                 )
@@ -329,15 +366,144 @@ fn arg_str(args: &Value, key: &str) -> Result<String, EclassError> {
 }
 
 fn arg_u32(args: &Value, key: &str) -> Option<u32> {
-    args.get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
+    args.get(key).and_then(|value| match value {
+        Value::Number(number) => number.as_u64().and_then(|value| u32::try_from(value).ok()),
+        Value::String(text) => text.parse::<u32>().ok(),
+        _ => None,
+    })
 }
 
 fn arg_usize(args: &Value, key: &str) -> Option<usize> {
     args.get(key)
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
+}
+
+/// Resolve `course_id`, or a human course name/code through `list_courses`.
+///
+/// Ambiguous names fail with `AMBIGUOUS_COURSE` and candidate IDs instead of
+/// silently returning data for an arbitrary course.
+async fn arg_course_id(service: &EClassService, args: &Value) -> Result<u32, EclassError> {
+    if let Some(course_id) = arg_u32(args, "course_id") {
+        return Ok(course_id);
+    }
+    let query = args
+        .get("course")
+        .and_then(Value::as_str)
+        .ok_or(EclassError::CourseNotFound)?;
+    service.resolve_course(query).await
+}
+
+/// Reject unknown or missing arguments, and check the declared JSON types.
+///
+/// MCP clients vary in how strictly they validate `inputSchema`, so the server
+/// enforces it: a typo such as `max_page` must fail loudly instead of being
+/// dropped and returning unfiltered data.
+fn validate_args(name: &str, args: &Value) -> Result<(), EclassError> {
+    let schema = tools()
+        .into_iter()
+        .find(|tool| tool.name == name)
+        .map(|tool| tool.input_schema)
+        .ok_or_else(|| EclassError::UnknownTool(name.to_string()))?;
+    let Some(object) = args.as_object() else {
+        return Err(EclassError::InvalidArgument(format!(
+            "{name} expects a JSON object"
+        )));
+    };
+    let properties = schema.get("properties").and_then(Value::as_object);
+    let allowed: Vec<&str> = properties
+        .map(|properties| properties.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    let unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !allowed.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(EclassError::InvalidArgument(format!(
+            "{name} does not accept {}; allowed arguments: {}",
+            unknown
+                .iter()
+                .map(|key| format!("`{key}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if allowed.is_empty() {
+                "none".to_string()
+            } else {
+                allowed.join(", ")
+            }
+        )));
+    }
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|required| required.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|key| !object.get(*key).is_some_and(|value| !value.is_null()))
+        .collect();
+    if !missing.is_empty() {
+        return Err(EclassError::InvalidArgument(format!(
+            "{name} requires {}; allowed arguments: {}",
+            missing
+                .iter()
+                .map(|key| format!("`{key}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            allowed.join(", ")
+        )));
+    }
+    if let Some(properties) = properties {
+        for (key, value) in object {
+            let Some(property) = properties.get(key) else {
+                continue;
+            };
+            let kind = property
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            // Treat an explicit null as "not provided" for optional arguments.
+            if value.is_null() {
+                continue;
+            }
+            if !type_matches(kind, value) {
+                return Err(EclassError::InvalidArgument(format!(
+                    "`{key}` for {name} must be {kind}, got {}",
+                    json_type(value)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn type_matches(kind: &str, value: &Value) -> bool {
+    match kind {
+        "integer" => match value {
+            Value::Number(number) => number.as_i64().is_some() || number.as_u64().is_some(),
+            Value::String(text) => text.parse::<i64>().is_ok(),
+            _ => false,
+        },
+        "number" => value.is_number(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        _ => true,
+    }
+}
+
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn schema(properties: Value, required: &[&str]) -> Value {
@@ -368,16 +534,16 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_courses",
-            description: "List courses filtered by title/code and term.",
+            description: "List compact courses for the current academic term (id, name, term). Pass all_terms=true or term=\"2026년 1학기\" to widen.",
             input_schema: schema(
-                json!({"query": {"type": "string"}, "term": {"type": "string"}}),
+                json!({"query": {"type": "string"}, "term": {"type": "string"}, "all_terms": {"type": "boolean"}}),
                 &[],
             ),
             annotations: read_only(),
         },
         Tool {
             name: "get_briefing",
-            description: "Courses, upcoming todo deadlines and recent announcements in one call.",
+            description: "One call: current-term courses, deadlines due in the next `days` (Asia/Seoul), recent announcements, and already-overdue items.",
             input_schema: schema(
                 json!({"days": {"type": "integer", "minimum": 1, "maximum": 60}, "course_limit": {"type": "integer", "minimum": 1, "maximum": 30}}),
                 &[],
@@ -392,19 +558,28 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_learning_items",
-            description: "Compact weekly modules; optional week/title/type filters.",
+            description: "Compact weekly modules with current week; optional week/title/type filters.",
             input_schema: schema(
-                json!({"course_id": {"type": "integer"}, "week": {"type": "integer"}, "query": {"type": "string"}, "content_type": {"type": "string"}, "detail": {"type": "boolean"}}),
-                &["course_id"],
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}, "week": {"type": "integer"}, "query": {"type": "string"}, "content_type": {"type": "string"}, "detail": {"type": "boolean"}}),
+                &[],
             ),
             annotations: read_only(),
         },
         Tool {
             name: "list_materials",
-            description: "List Commons and Canvas materials with stable resource IDs.",
+            description: "List Commons videos, Canvas files and LearningX board attachments with stable resource IDs. Follow next with next_param=offset while has_more=true.",
             input_schema: schema(
-                json!({"course_id": {"type": "integer"}, "week": {"type": "integer"}, "query": {"type": "string"}, "content_type": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
-                &["course_id"],
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}, "week": {"type": "integer"}, "query": {"type": "string"}, "content_type": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
+                &[],
+            ),
+            annotations: read_only(),
+        },
+        Tool {
+            name: "get_week_materials",
+            description: "Materials for the latest week that has any; passes course_id or an exact course name. An explicit week is checked against the course's weeks.",
+            input_schema: schema(
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}, "week": {"type": "integer", "minimum": 1, "maximum": 30}}),
+                &[],
             ),
             annotations: read_only(),
         },
@@ -416,16 +591,16 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "read_material",
-            description: "Read PDF page text with resumable offsets.",
+            description: "Read PDF page text. Use max_pages (1-20, default 10) or end_page to bound one call; continue with next_page + next_offset while has_more=true.",
             input_schema: schema(
-                json!({"resource_id": {"type": "string"}, "start_page": {"type": "integer", "minimum": 1}, "end_page": {"type": "integer", "minimum": 1}, "start_offset": {"type": "integer", "minimum": 0}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 100000}}),
+                json!({"resource_id": {"type": "string"}, "start_page": {"type": "integer", "minimum": 1}, "end_page": {"type": "integer", "minimum": 1}, "max_pages": {"type": "integer", "minimum": 1, "maximum": 20}, "start_offset": {"type": "integer", "minimum": 0}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 100000}}),
                 &["resource_id"],
             ),
             annotations: write_read(),
         },
         Tool {
             name: "list_announcements",
-            description: "List announcements in an explicit date range.",
+            description: "List announcements between start_date and end_date (YYYY-MM-DD, Asia/Seoul). Both dates are required; get_briefing covers recent announcements across courses.",
             input_schema: schema(
                 json!({"course_id": {"type": "integer"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}),
                 &["course_id", "start_date", "end_date"],
@@ -443,8 +618,11 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_assignments",
-            description: "List assignments and current-user submissions.",
-            input_schema: schema(json!({"course_id": {"type": "integer"}}), &["course_id"]),
+            description: "List assignments and current-user submissions; compact by default, detail=true for raw Canvas fields.",
+            input_schema: schema(
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}, "detail": {"type": "boolean"}}),
+                &[],
+            ),
             annotations: read_only(),
         },
         Tool {
@@ -459,7 +637,10 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "list_deadlines",
             description: "Combine assignment and LearningX deadlines in Asia/Seoul.",
-            input_schema: schema(json!({"course_id": {"type": "integer"}}), &["course_id"]),
+            input_schema: schema(
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}}),
+                &[],
+            ),
             annotations: read_only(),
         },
         Tool {
@@ -480,24 +661,27 @@ fn tools() -> Vec<Tool> {
         Tool {
             name: "list_boards",
             description: "List LearningX boards.",
-            input_schema: schema(json!({"course_id": {"type": "integer"}}), &["course_id"]),
+            input_schema: schema(
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}}),
+                &[],
+            ),
             annotations: read_only(),
         },
         Tool {
             name: "list_board_posts",
-            description: "Read one LearningX board page.",
+            description: "Read one LearningX board page (KST timestamps). Get board_id from list_boards; continue with next/next_param.",
             input_schema: schema(
-                json!({"course_id": {"type": "integer"}, "board_id": {"type": "integer"}, "page": {"type": "integer", "minimum": 1}}),
-                &["course_id", "board_id"],
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}, "board_id": {"type": "integer"}, "page": {"type": "integer", "minimum": 1}}),
+                &["board_id"],
             ),
             annotations: read_only(),
         },
         Tool {
             name: "get_board_post",
-            description: "Read a LearningX post detail.",
+            description: "Read a LearningX post detail with attachments and KST timestamps.",
             input_schema: schema(
-                json!({"course_id": {"type": "integer"}, "board_id": {"type": "integer"}, "post_id": {"type": "integer"}}),
-                &["course_id", "board_id", "post_id"],
+                json!({"course_id": {"type": "integer"}, "course": {"type": "string"}, "board_id": {"type": "integer"}, "post_id": {"type": "integer"}}),
+                &["board_id", "post_id"],
             ),
             annotations: read_only(),
         },
@@ -638,7 +822,82 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 27);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 28);
+    }
+
+    #[test]
+    fn rejects_unknown_arguments_instead_of_ignoring_them() {
+        let error = validate_args(
+            "get_week_materials",
+            &json!({"course_id": 1, "max_pages": 1}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "INVALID_ARGUMENT");
+        let message = error.to_string();
+        assert!(message.contains("max_pages"), "{message}");
+        assert!(message.contains("allowed arguments"), "{message}");
+        assert!(message.contains("week"), "{message}");
+    }
+
+    #[test]
+    fn rejects_missing_required_arguments_with_a_useful_message() {
+        let error = validate_args("list_board_posts", &json!({"course_id": 1})).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("requires `board_id`"), "{message}");
+    }
+
+    #[test]
+    fn treats_explicit_nulls_as_absent() {
+        validate_args(
+            "list_materials",
+            &json!({"course_id": 1, "week": null, "query": null}),
+        )
+        .unwrap();
+        let error = validate_args(
+            "get_assignment",
+            &json!({"course_id": 1, "assignment_id": null}),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires `assignment_id`"));
+    }
+
+    #[test]
+    fn rejects_wrong_argument_types() {
+        let error =
+            validate_args("list_materials", &json!({"course_id": 1, "limit": "many"})).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`limit` for list_materials must be integer")
+        );
+        // Numeric strings are accepted for integer arguments.
+        validate_args("list_materials", &json!({"course_id": "1", "limit": "5"})).unwrap();
+    }
+
+    #[test]
+    fn accepts_every_declared_argument_for_every_tool() {
+        for tool in tools() {
+            let properties = tool.input_schema["properties"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                properties.keys().all(|key| !key.is_empty()),
+                "{} has an empty property name",
+                tool.name
+            );
+            let required = tool.input_schema["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for key in &required {
+                assert!(
+                    properties.contains_key(key.as_str().unwrap()),
+                    "{} requires an undeclared argument",
+                    tool.name
+                );
+            }
+        }
     }
 
     #[tokio::test]

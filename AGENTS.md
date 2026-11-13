@@ -16,8 +16,9 @@ For the Rust path, read `rust/ONBOARDING.md` before guiding a user.
    `session.json` in chat. The user signs in in the dedicated browser.
 4. Re-check `get_onboarding_status` after the user confirms. Do not infer
    success from a command exiting.
-5. If `OPEN_WEEKLY_LEARNING` remains after login, ask the user to open the
-   **주차학습 (모듈)** page once, then run `eclass-mcp login --no-launch`.
+5. If `REFRESH_LEARNINGX_TOKEN` remains after login, run
+   `eclass-mcp auth refresh --via auto`. It replays the LTI launch with the
+   saved cookies, then falls back to the signed-in Aside browser.
 6. If `ready=true`, run `eclass-mcp config --client <client>` and tell the user
    to restart the MCP connection.
 

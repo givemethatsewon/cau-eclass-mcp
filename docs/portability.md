@@ -8,7 +8,7 @@ Python은 OZ PDF 내보내기만 담당하는 작은 헬퍼로 축소했다. 남
 ## 실험 결과
 
 `rust/`는 별도 Cargo 크레이트다. Python 0.4.0과 같은 `session.json`을 읽고,
-같은 26개 도구에 `get_onboarding_status`를 더한 27개 MCP 도구를 제공한다.
+같은 27개 도구에 `get_onboarding_status`를 더한 28개 MCP 도구를 제공한다.
 
 | 항목 | Python 0.4.0 | Rust core |
 |---|---:|---:|
@@ -34,7 +34,7 @@ Python은 OZ PDF 내보내기만 담당하는 작은 헬퍼로 축소했다. 남
 - 강좌·todo·briefing·주차자료·공지·과제·마감·게시판·그룹
 - Commons PDF/영상, Canvas 파일 다운로드
 - PDF 검증·페이지별 텍스트(`lopdf`), 이어 읽기 offset
-- MCP stdio JSON-RPC 27개 도구
+- MCP stdio JSON-RPC 28개 도구
 - `login`, `onboard`, `logout`, `doctor`, `config`, `serve`
 
 ## Python이 필수인 부분이 있나
@@ -143,7 +143,7 @@ e-Class에는 OAuth식 scope 동의가 없다. 온보딩은 **로그인 세션, 
 | `RUN_ONBOARD` | 저장된 세션 없음 |
 | `SESSION_EXPIRED` | 세션은 있으나 만료/거부됨 |
 | `CHECK_CONNECTION` | 네트워크·프로필 확인 실패 |
-| `OPEN_WEEKLY_LEARNING` | Canvas는 되지만 LearningX 토큰이 없음 |
+| `REFRESH_LEARNINGX_TOKEN` | Canvas는 되지만 LearningX 토큰이 없음 |
 | `CHECK_ENROLLMENT` | 강좌 조회 실패 또는 0개 |
 | `CONFIGURE_CLIENT` | 준비 완료, 클라이언트 설정 단계 |
 
@@ -154,11 +154,10 @@ e-Class에는 OAuth식 scope 동의가 없다. 온보딩은 **로그인 세션, 
 안내가 가능하다. `get_onboarding_status`는 쿠키 값·Bearer 토큰·세션 파일
 내용을 절대 포함하지 않으며, 이를 직렬화 테스트로 고정했다.
 
-LearningX 토큰은 `login`/`onboard`가 `/learningx/main` HTTP 요청 후에도
-없으면, 전용 Chrome 프로필로 `learningx/main` 탭을 열고 쿠키 DB를 잠시
-폴링한다. 자동화가 실패하면 `OPEN_WEEKLY_LEARNING` 액션으로 남겨 사용자가
-**주차학습 (모듈)** 화면을 한 번 열고 `login --no-launch`를 실행하도록
-안내한다.
+LearningX 토큰은 저장된 Canvas 쿠키로 강좌 페이지의 LTI 폼을 다시 POST해
+발급한다. Canvas 쿠키가 만료됐으면 `auth refresh --via aside`가 로그인된
+Aside 브라우저에서 토큰만 회수한다. 둘 다 실패하면
+`REFRESH_LEARNINGX_TOKEN` 액션으로 남긴다.
 
 세션 파일 위치는 macOS `~/Library/Application Support/cau-eclass/session.json`,
 Linux `${XDG_CONFIG_HOME:-~/.config}/cau-eclass/session.json`, Windows

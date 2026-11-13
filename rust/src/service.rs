@@ -8,7 +8,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, SecondsFormat, Utc};
 use chrono_tz::Asia::Seoul;
 use futures_util::{StreamExt, stream};
 use regex::Regex;
@@ -19,8 +19,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     catalog::{
-        Material, compact_modules, course_matches, filter_materials, material_catalog,
-        parse_resource_id,
+        Material, board_materials, compact_modules, course_matches, filter_materials,
+        material_catalog, parse_resource_id, term_key, term_key_for_month, week_from_title,
     },
     documents::{inspect_pdf, read_pdf, sanitize_text},
     error::EclassError,
@@ -63,6 +63,16 @@ struct SubmissionPlan {
 struct CachedMaterial {
     revision: (Option<String>, Option<String>),
     result: Value,
+}
+
+/// One catalog pass shared by `list_materials` and `get_week_materials`.
+#[derive(Debug, Clone)]
+struct MaterialView {
+    catalog: Vec<Material>,
+    modules: Vec<Value>,
+    complete: bool,
+    warnings: Vec<String>,
+    notes: Vec<String>,
 }
 
 /// e-Class reads, materials and downloads.
@@ -150,10 +160,18 @@ impl EClassService {
         if user.get("id").is_none() {
             return Err(EclassError::NoProfile);
         }
+        let session = self.transport.session();
         Ok(json!({
             "authenticated": true,
             "session_state": "authenticated",
             "user": select(&user, &["id", "name"]),
+            "learningx_token": session
+                .as_ref()
+                .and_then(|session| session.token("xn_api_token"))
+                .is_some(),
+            "learningx_token_age_secs": session
+                .as_ref()
+                .and_then(crate::session::Session::learningx_token_age_secs),
             "submission_enabled": self.enable_submission,
             "transport": "http"
         }))
@@ -178,7 +196,7 @@ impl EClassService {
                 "error": null
             });
         }
-        let session = self.transport.session();
+        let mut session = self.transport.session();
         let (authenticated, auth_error) = match self.session_status().await {
             Ok(status) => (
                 status
@@ -198,21 +216,64 @@ impl EClassService {
         } else {
             "unavailable"
         };
+        if authenticated
+            && session
+                .as_ref()
+                .and_then(|session| session.token("xn_api_token"))
+                .is_none()
+            && self.transport.mint_learningx_token().await.unwrap_or(false)
+        {
+            session = self.transport.session();
+        }
         let learningx_token = session
             .as_ref()
             .and_then(|session| session.token("xn_api_token"))
             .is_some();
+        let mut learningx_token_age_secs = session
+            .as_ref()
+            .and_then(crate::session::Session::learningx_token_age_secs);
         let courses = if authenticated {
-            self.courses(None, None).await
+            self.courses(None, None, false).await
         } else {
             Err(EclassError::SessionExpired)
         };
         let courses_visible = courses
             .as_ref()
             .ok()
+            .and_then(|value| value.get("visible"))
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok());
+        let first_course = courses
+            .as_ref()
+            .ok()
             .and_then(|value| value.get("items"))
             .and_then(Value::as_array)
-            .map(Vec::len);
+            .and_then(|items| items.first())
+            .and_then(|course| course.get("course_id"))
+            .and_then(positive_u64)
+            .and_then(|value| u32::try_from(value).ok());
+        let mut learningx_ok = false;
+        if authenticated
+            && learningx_token
+            && let Some(course_id) = first_course
+        {
+            learningx_ok = self.boards(course_id).await.is_ok();
+            if !learningx_ok
+                && self
+                    .transport
+                    .refresh_learningx_token()
+                    .await
+                    .unwrap_or(false)
+            {
+                learningx_ok = self.boards(course_id).await.is_ok();
+                if learningx_ok {
+                    session = self.transport.session();
+                    learningx_token_age_secs = session
+                        .as_ref()
+                        .and_then(crate::session::Session::learningx_token_age_secs);
+                }
+            }
+        }
 
         let mut actions = Vec::new();
         match session_state {
@@ -234,11 +295,11 @@ impl EClassService {
             _ => {}
         }
         if authenticated {
-            if !learningx_token {
+            if !learningx_ok {
                 actions.push(action(
-                    "OPEN_WEEKLY_LEARNING",
-                    "Open the weekly modules (주차학습) page once so LearningX can issue its API token.",
-                    Some("eclass-mcp login --no-launch"),
+                    "REFRESH_LEARNINGX_TOKEN",
+                    "LearningX needs a fresh API token; mint it with the browser session or Aside.",
+                    Some("eclass-mcp auth refresh --via aside"),
                 ));
             }
             if let Err(error) = &courses {
@@ -257,8 +318,7 @@ impl EClassService {
                 ));
             }
         }
-        let ready =
-            authenticated && learningx_token && courses_visible.is_some_and(|count| count > 0);
+        let ready = authenticated && learningx_ok && courses_visible.is_some_and(|count| count > 0);
         if ready {
             actions.push(action(
                 "CONFIGURE_CLIENT",
@@ -270,7 +330,10 @@ impl EClassService {
             "schema_version": 1,
             "session_state": session_state,
             "authenticated": authenticated,
+            "canvas_ok": authenticated,
             "learningx_token": learningx_token,
+            "learningx_ok": learningx_ok,
+            "learningx_token_age_secs": learningx_token_age_secs,
             "courses_visible": courses_visible,
             "ready": ready,
             "next_actions": actions,
@@ -280,30 +343,137 @@ impl EClassService {
     }
 
     /// List courses with optional title/code and term filters.
+    ///
+    /// Without an explicit term the list is scoped to the academic term that
+    /// contains today, so a default call returns the courses a student is
+    /// taking right now instead of every course they have ever taken.
     pub async fn courses(
         &self,
         query: Option<&str>,
         term: Option<&str>,
+        all_terms: bool,
     ) -> Result<Value, EclassError> {
         let mut result = self
             .paged("/api/v1/courses?include[]=term&per_page=100", false, 20)
             .await?;
+        let visible = result.items.len();
+        // The term that contains today is decided from every visible course,
+        // not from the query results: a query that only matches old courses
+        // must not pretend one of those old terms is the current one.
+        let current = current_term(&result.items);
         result
             .items
             .retain(|course| course_matches(course, query, term));
-        for course in &mut result.items {
-            if let Some(term) = course.get("term").and_then(Value::as_object) {
-                let compact = select(&Value::Object(term.clone()), &["id", "name"]);
-                if let Some(object) = course.as_object_mut() {
-                    object.insert("term".to_string(), compact);
+        let matched = result.items.len();
+        let mut warnings = Vec::new();
+        let mut term_applied: Option<String> = None;
+        if term.is_none()
+            && !all_terms
+            && let Some((key, name)) = current
+        {
+            let scoped: Vec<Value> = result
+                .items
+                .iter()
+                .filter(|course| course_term_key(course) == Some(key))
+                .cloned()
+                .collect();
+            if !scoped.is_empty() {
+                warnings.push(format!(
+                    "showing {} of {matched} matching courses in {name}; pass all_terms=true or term=\"...\" to widen",
+                    scoped.len()
+                ));
+                result.items = scoped;
+                term_applied = Some(name);
+            }
+        }
+        let items = result.items.iter().map(compact_course).collect::<Vec<_>>();
+        Ok(json!({
+            "items": items,
+            "total": result.items.len(),
+            "visible": visible,
+            "term": term_applied,
+            "complete": result.complete,
+            "has_more": false,
+            "next": null,
+            "warnings": warnings
+        }))
+    }
+
+    /// Resolve a human course name/code to a single course ID.
+    ///
+    /// The current term wins over older terms. A query that still matches more
+    /// than one course returns [`EclassError::AmbiguousCourse`] with candidates
+    /// instead of silently picking one.
+    pub async fn resolve_course(&self, query: &str) -> Result<u32, EclassError> {
+        let listed = self.courses(None, None, true).await?;
+        let courses = listed
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let search = normalized(Some(query));
+        if search.is_empty() {
+            return Err(EclassError::CourseNotFound);
+        }
+        let current = current_term(&courses).map(|(key, _)| key);
+        let haystack = |course: &Value| {
+            ["name", "course_code"]
+                .iter()
+                .filter_map(|key| course.get(*key).and_then(Value::as_str))
+                .any(|value| normalized(Some(value)).contains(&search))
+        };
+        let exact = |course: &Value| {
+            ["name", "course_code"]
+                .iter()
+                .filter_map(|key| course.get(*key).and_then(Value::as_str))
+                .any(|value| normalized(Some(value)) == search)
+        };
+        // Exact name, then substring; each pass prefers the current term.
+        for matcher in [&exact as &dyn Fn(&Value) -> bool, &haystack] {
+            for require_current in [true, false] {
+                let mut matches: Vec<Value> = courses
+                    .iter()
+                    .filter(|course| matcher(course))
+                    .filter(|course| {
+                        !require_current
+                            || current.is_some_and(|key| course_term_key(course) == Some(key))
+                    })
+                    .cloned()
+                    .collect();
+                match matches.len() {
+                    0 => {}
+                    1 => {
+                        return matches
+                            .remove(0)
+                            .get("course_id")
+                            .and_then(positive_u64)
+                            .and_then(|id| u32::try_from(id).ok())
+                            .ok_or(EclassError::CourseNotFound);
+                    }
+                    count => {
+                        sort_courses_for_briefing(&mut matches);
+                        let candidates = matches
+                            .iter()
+                            .take(10)
+                            .map(|course| {
+                                json!({
+                                    "course_id": course.get("course_id").and_then(positive_u64)
+                                        .map_or(Value::Null, |id| json!(id)),
+                                    "name": course.get("name").cloned().unwrap_or(Value::Null),
+                                    "term": course.get("term").cloned().unwrap_or(Value::Null)
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        return Err(EclassError::AmbiguousCourse {
+                            query: query.to_string(),
+                            count,
+                            candidates: Value::Array(candidates),
+                        });
+                    }
                 }
             }
         }
-        Ok(json!({
-            "items": result.items,
-            "complete": result.complete,
-            "next_cursor": result.next_cursor
-        }))
+        Err(EclassError::CourseNotFound)
     }
 
     /// Canvas todo items.
@@ -311,40 +481,53 @@ impl EClassService {
         let result = self
             .paged("/api/v1/users/self/todo?per_page=100", false, 20)
             .await?;
-        Ok(json!({
-            "items": result.items,
-            "complete": result.complete,
-            "next_cursor": result.next_cursor
-        }))
+        let truncated = result.next_cursor.is_some();
+        let mut payload = list_response(result.items, result.complete && !truncated, None, None);
+        if truncated && let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "warnings".to_string(),
+                json!(["more todo items exist beyond the page limit"]),
+            );
+        }
+        Ok(payload)
     }
 
     /// One bounded pass over courses, todo items and recent announcements.
     pub async fn briefing(&self, days: u32, course_limit: usize) -> Result<Value, EclassError> {
         if !(1..=60).contains(&days) {
-            return Err(EclassError::InvalidPageRange);
+            return Err(EclassError::InvalidArgument(
+                "days must be between 1 and 60".to_string(),
+            ));
         }
         if !(1..=30).contains(&course_limit) {
-            return Err(EclassError::InvalidPageRange);
+            return Err(EclassError::InvalidArgument(
+                "course_limit must be between 1 and 30".to_string(),
+            ));
         }
-        let today = Utc::now().with_timezone(&Seoul).date_naive();
-        let start = today - chrono::Duration::days(i64::from(days) - 1);
+        let now = Utc::now().with_timezone(&Seoul);
+        let today = now.date_naive();
+        // Announcements look back, deadlines look forward: two explicit windows.
+        let recent_start = today - chrono::Duration::days(i64::from(days) - 1);
+        let upcoming_end = today + chrono::Duration::days(i64::from(days));
         let mut warnings = Vec::new();
 
-        let courses = self.courses(None, None).await?;
-        let all_courses = courses
+        let listed = self.courses(None, None, false).await?;
+        let mut complete = listed
+            .get("complete")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut ordered = listed
             .get("items")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let selected: Vec<Value> = all_courses.iter().take(course_limit).cloned().collect();
-        let mut complete = courses
-            .get("complete")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if all_courses.len() > selected.len() {
+        let visible = ordered.len();
+        sort_courses_for_briefing(&mut ordered);
+        let selected: Vec<Value> = ordered.iter().take(course_limit).cloned().collect();
+        if visible > selected.len() {
             warnings.push(format!(
-                "course_limit={course_limit} truncated {} courses",
-                all_courses.len()
+                "course_limit={course_limit} truncated {} of {visible} current-term courses",
+                visible - selected.len()
             ));
         }
 
@@ -363,10 +546,13 @@ impl EClassService {
         let tasks = selected.iter().map(|course| {
             let transport = Arc::clone(&self.transport);
             let course = course.clone();
-            let start = start.to_string();
+            let start = recent_start.to_string();
             let today = today.to_string();
             async move {
-                let course_id = course.get("id").and_then(positive_u64).unwrap_or_default();
+                let course_id = course
+                    .get("course_id")
+                    .and_then(positive_u64)
+                    .unwrap_or_default();
                 let result = announcements_on(&transport, course_id, &start, &today).await;
                 (course, result)
             }
@@ -375,7 +561,10 @@ impl EClassService {
 
         let mut announcements = Vec::new();
         for (course, result) in gathered {
-            let course_id = course.get("id").and_then(positive_u64).unwrap_or_default();
+            let course_id = course
+                .get("course_id")
+                .and_then(positive_u64)
+                .unwrap_or_default();
             let course_name = course
                 .get("name")
                 .and_then(Value::as_str)
@@ -419,8 +608,24 @@ impl EClassService {
                         .unwrap_or_default(),
                 )
         });
+        let unread = announcements
+            .iter()
+            .filter(|announcement| {
+                announcement.get("read_state").and_then(Value::as_str) != Some("read")
+            })
+            .count();
 
+        let course_names: HashMap<String, String> = ordered
+            .iter()
+            .filter_map(|course| {
+                let id = course.get("course_id").and_then(positive_u64)?;
+                let name = course.get("name").and_then(Value::as_str)?;
+                Some((id.to_string(), name.to_string()))
+            })
+            .collect();
         let mut deadlines = Vec::new();
+        let mut overdue = Vec::new();
+        let mut later = 0_usize;
         for entry in todo
             .get("items")
             .and_then(Value::as_array)
@@ -434,9 +639,12 @@ impl EClassService {
                 let Some(due_at) = value.get("due_at").and_then(Value::as_str) else {
                     continue;
                 };
-                if due_at.is_empty() {
+                let Some(due_date) = DateTime::parse_from_rfc3339(due_at)
+                    .ok()
+                    .map(|date| date.with_timezone(&Seoul).date_naive())
+                else {
                     continue;
-                }
+                };
                 let mut item = Map::new();
                 item.insert(
                     "kind".to_string(),
@@ -462,16 +670,44 @@ impl EClassService {
                     "course_id".to_string(),
                     entry.get("course_id").cloned().unwrap_or(Value::Null),
                 );
+                let course_id = entry
+                    .get("course_id")
+                    .and_then(positive_u64)
+                    .map(|id| id.to_string());
+                let fallback_name = course_id
+                    .as_deref()
+                    .and_then(|id| course_names.get(id))
+                    .cloned()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null);
                 item.insert(
                     "course_name".to_string(),
-                    entry.get("context_name").cloned().unwrap_or(Value::Null),
+                    entry
+                        .get("context_name")
+                        .filter(|value| !value.is_null())
+                        .cloned()
+                        .unwrap_or(fallback_name),
                 );
                 item.insert(
                     "points_possible".to_string(),
                     value.get("points_possible").cloned().unwrap_or(Value::Null),
                 );
                 item.extend(date_fields(&Value::Object(value.clone())));
-                deadlines.push(Value::Object(item));
+                if due_date < today {
+                    item.insert(
+                        "days_overdue".to_string(),
+                        json!((today - due_date).num_days()),
+                    );
+                    overdue.push(Value::Object(item));
+                } else if due_date > upcoming_end {
+                    later += 1;
+                } else {
+                    item.insert(
+                        "days_left".to_string(),
+                        json!((due_date - today).num_days()),
+                    );
+                    deadlines.push(Value::Object(item));
+                }
                 break;
             }
         }
@@ -486,16 +722,38 @@ impl EClassService {
                         .unwrap_or_default(),
                 )
         });
+        overdue.sort_by(|left, right| {
+            right
+                .get("due_at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .cmp(
+                    left.get("due_at")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+        });
+        let overdue_total = overdue.len();
+        overdue.truncate(5);
 
         Ok(json!({
-            "range": {"start_date": start.to_string(), "end_date": today.to_string()},
+            "timezone": "Asia/Seoul",
+            "today": today.to_string(),
+            "windows": {
+                "deadlines": {"start_date": today.to_string(), "end_date": upcoming_end.to_string()},
+                "announcements": {"start_date": recent_start.to_string(), "end_date": today.to_string()}
+            },
             "courses": selected,
             "deadlines": deadlines,
+            "overdue": overdue,
             "announcements": announcements,
             "counts": {
                 "courses": selected.len(),
                 "deadlines": deadlines.len(),
-                "announcements": announcements.len()
+                "overdue": overdue_total,
+                "deadlines_beyond_window": later,
+                "announcements": announcements.len(),
+                "unread_announcements": unread
             },
             "complete": complete,
             "warnings": warnings
@@ -514,6 +772,298 @@ impl EClassService {
         value.as_array().cloned().ok_or(EclassError::UnexpectedList)
     }
 
+    async fn learningx_boards(&self, course_id: u32) -> Result<Vec<Value>, EclassError> {
+        let body = self
+            .get(
+                &format!("/learningx/api/v1/learningx_board/courses/{course_id}/boards"),
+                true,
+                false,
+            )
+            .await?;
+        body.as_array().cloned().ok_or(EclassError::UnexpectedList)
+    }
+
+    /// Board posts with attachment metadata, newest first.
+    async fn board_posts_with_attachments(
+        &self,
+        course_id: u32,
+        board_id: u32,
+        week: Option<u32>,
+    ) -> Result<Vec<Value>, EclassError> {
+        let mut posts = Vec::new();
+        for page in 1..=10 {
+            let body = self
+                .get(
+                    &format!(
+                        "/learningx/api/v1/learningx_board/courses/{course_id}/boards/{board_id}/posts?page={page}&per_page=100"
+                    ),
+                    true,
+                    false,
+                )
+                .await?;
+            posts.extend(
+                body.get("items")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            let last = body
+                .get("pagination")
+                .and_then(|pagination| pagination.get("last_page"))
+                .and_then(Value::as_u64)
+                .unwrap_or(1);
+            if page >= last || last <= 1 {
+                break;
+            }
+        }
+        posts.sort_by(|left, right| {
+            right
+                .get("created_at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .cmp(
+                    left.get("created_at")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+        });
+        if let Some(week) = week {
+            posts.retain(|post| {
+                post.get("title")
+                    .and_then(Value::as_str)
+                    .and_then(week_from_title)
+                    == Some(week)
+            });
+        }
+        posts.truncate(20);
+        let mut detailed = Vec::new();
+        for post in posts {
+            if post.get("attachment_count").and_then(Value::as_u64) == Some(0) {
+                continue;
+            }
+            let Some(post_id) = post.get("id").and_then(positive_u64) else {
+                continue;
+            };
+            // One unreadable post must not hide the rest of the board.
+            let detail = match self
+                .get(
+                    &format!(
+                        "/learningx/api/v1/learningx_board/courses/{course_id}/boards/{board_id}/posts/{post_id}"
+                    ),
+                    true,
+                    false,
+                )
+                .await
+            {
+                Ok(detail) => detail,
+                Err(error) => {
+                    crate::mcp::eprintln_flush(&format!(
+                        "skipped board post {post_id}: {error}"
+                    ));
+                    continue;
+                }
+            };
+            let mut detail = detail;
+            if let Some(object) = detail.as_object_mut() {
+                object.insert("board_id".to_string(), json!(board_id));
+            }
+            detailed.push(detail);
+        }
+        Ok(detailed)
+    }
+
+    /// Materials posted as attachments on LearningX boards (강의자료실).
+    async fn learningx_board_materials(
+        &self,
+        course_id: u32,
+        week: Option<u32>,
+    ) -> Result<Vec<Material>, EclassError> {
+        let boards = self.learningx_boards(course_id).await?;
+        let preferred: Vec<&Value> = boards
+            .iter()
+            .filter(|board| {
+                board
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|title| {
+                        title.contains("자료") || title.to_ascii_lowercase().contains("material")
+                    })
+            })
+            .collect();
+        let selected: Vec<&Value> = if preferred.is_empty() {
+            boards.iter().collect()
+        } else {
+            preferred
+        };
+        let mut posts = Vec::new();
+        for board in selected {
+            let Some(board_id) = board.get("id").and_then(positive_u64) else {
+                continue;
+            };
+            match self
+                .board_posts_with_attachments(
+                    course_id,
+                    u32::try_from(board_id).map_err(|_| EclassError::InvalidPath)?,
+                    week,
+                )
+                .await
+            {
+                Ok(mut items) => posts.append(&mut items),
+                Err(EclassError::LearningxUnauthorized | EclassError::LearningxTokenMissing) => {
+                    return Err(EclassError::LearningxTokenMissing);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(board_materials(course_id, &posts))
+    }
+
+    /// Week numbers advertised by modules and board post titles.
+    async fn available_weeks(&self, course_id: u32, modules: &[Value]) -> Vec<u32> {
+        let mut weeks = Vec::new();
+        for module in modules {
+            let direct = ["week_position", "week", "position"]
+                .iter()
+                .find_map(|key| module.get(*key).and_then(positive_u64))
+                .and_then(|value| u32::try_from(value).ok());
+            if let Some(week) = direct {
+                weeks.push(week);
+            } else if let Some(title) = module.get("title").and_then(Value::as_str)
+                && let Some(week) = week_from_title(title)
+            {
+                weeks.push(week);
+            }
+        }
+        if let Ok(boards) = self.learningx_boards(course_id).await {
+            let preferred: Vec<&Value> = boards
+                .iter()
+                .filter(|board| {
+                    board
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .is_some_and(|title| {
+                            title.contains("자료")
+                                || title.to_ascii_lowercase().contains("material")
+                        })
+                })
+                .collect();
+            let selected = if preferred.is_empty() {
+                boards.iter().collect::<Vec<_>>()
+            } else {
+                preferred
+            };
+            for board in selected {
+                let Some(board_id) = board.get("id").and_then(positive_u64) else {
+                    continue;
+                };
+                let Ok(board_id) = u32::try_from(board_id) else {
+                    continue;
+                };
+                let path = format!(
+                    "/learningx/api/v1/learningx_board/courses/{course_id}/boards/{board_id}/posts?page=1&per_page=100"
+                );
+                if let Ok(body) = self.get(&path, true, false).await
+                    && let Some(posts) = body.get("items").and_then(Value::as_array)
+                {
+                    weeks.extend(
+                        posts
+                            .iter()
+                            .filter(|post| {
+                                post.get("attachment_count")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or_default()
+                                    > 0
+                            })
+                            .filter_map(|post| {
+                                post.get("title")
+                                    .and_then(Value::as_str)
+                                    .and_then(week_from_title)
+                            })
+                            .take(20),
+                    );
+                }
+            }
+        }
+        weeks.sort_unstable();
+        weeks.dedup();
+        weeks
+    }
+
+    /// Materials for one week, defaulting to the latest week that has any.
+    pub async fn week_materials(
+        &self,
+        course_id: u32,
+        week: Option<u32>,
+    ) -> Result<Value, EclassError> {
+        let view = self.material_view(course_id, None).await?;
+        let mut warnings = view.warnings.clone();
+        let course_weeks = module_weeks(&view.modules);
+        let latest_course_week = course_weeks.last().copied();
+        let mut weeks_with_materials: Vec<u32> = view
+            .catalog
+            .iter()
+            .flat_map(|material| {
+                material
+                    .weeks
+                    .clone()
+                    .unwrap_or_else(|| material.week.into_iter().collect())
+            })
+            .collect();
+        weeks_with_materials.sort_unstable();
+        weeks_with_materials.dedup();
+        let target = week.or_else(|| weeks_with_materials.last().copied());
+        let Some(target) = target else {
+            return Ok(json!({
+                "items": [],
+                "total": 0,
+                "week": null,
+                "requested_week": week,
+                "current_week": latest_course_week,
+                "course_weeks": course_weeks,
+                "weeks_with_materials": weeks_with_materials,
+                "complete": view.complete,
+                "has_more": false,
+                "next": null,
+                "sources": ["commons", "canvas_file", "learningx_board"],
+                "warnings": warnings,
+                "notes": view.notes
+            }));
+        };
+        let items = filter_materials(&view.catalog, Some(target), None, None);
+        let mut complete = view.complete;
+        if let Some(max) = course_weeks.last()
+            && week.is_some_and(|requested| requested > *max)
+        {
+            warnings.push(format!(
+                "week {target} is outside this course's weeks 1..{max}"
+            ));
+            complete = false;
+        } else if items.is_empty() && week.is_some() {
+            warnings.push(format!(
+                "no materials in week {target}; weeks with materials: {}",
+                format_weeks(&weeks_with_materials)
+            ));
+        }
+        if week.is_none() {
+            warnings.retain(|warning| !warning.starts_with("week "));
+        }
+        Ok(json!({
+            "items": items,
+            "total": items.len(),
+            "week": target,
+            "requested_week": week,
+            "current_week": latest_course_week,
+            "course_weeks": course_weeks,
+            "weeks_with_materials": weeks_with_materials,
+            "complete": complete,
+            "has_more": false,
+            "next": null,
+            "sources": ["commons", "canvas_file", "learningx_board"],
+            "warnings": warnings,
+            "notes": view.notes
+        }))
+    }
+
     /// Compact weekly items or the raw provider view.
     pub async fn learning_items(
         &self,
@@ -524,21 +1074,107 @@ impl EClassService {
         detail: bool,
     ) -> Result<Value, EclassError> {
         let modules = self.modules(course_id).await?;
+        let weeks = self.available_weeks(course_id, &modules).await;
+        let current_week = weeks.last().copied();
         if detail {
             return Ok(json!({
                 "items": modules,
+                "weeks": weeks,
+                "current_week": current_week,
                 "complete": true,
-                "next_cursor": null,
+                "has_more": false,
+                "next": null,
                 "detail": true
             }));
         }
         let items = compact_modules(course_id, &modules, week, query, content_type);
         Ok(json!({
             "items": items,
+            "weeks": weeks,
+            "current_week": current_week,
             "complete": true,
-            "next_cursor": null,
+            "has_more": false,
+            "next": null,
             "detail": false
         }))
+    }
+
+    /// One catalog pass over modules, Canvas files and board attachments.
+    async fn material_view(
+        &self,
+        course_id: u32,
+        week: Option<u32>,
+    ) -> Result<MaterialView, EclassError> {
+        let mut warnings = Vec::new();
+        let modules = match self.modules(course_id).await {
+            Ok(modules) => modules,
+            Err(EclassError::LearningxTokenMissing | EclassError::LearningxUnauthorized) => {
+                warnings.push(
+                    "LearningX weekly modules unavailable: run `eclass-mcp auth refresh --via aside`"
+                        .to_string(),
+                );
+                Vec::new()
+            }
+            Err(error) => return Err(error),
+        };
+        let mut notes = Vec::new();
+        let files = match self
+            .paged(
+                &format!("/api/v1/courses/{course_id}/files?per_page=100"),
+                false,
+                20,
+            )
+            .await
+        {
+            Ok(files) => files,
+            Err(
+                EclassError::CanvasSessionExpired
+                | EclassError::PermissionDenied
+                | EclassError::Http(401 | 403),
+            ) => {
+                notes.push(
+                    "Canvas file listing is restricted for students; weekly modules and board materials are included"
+                        .to_string(),
+                );
+                Paged {
+                    items: Vec::new(),
+                    complete: true,
+                    next_cursor: None,
+                }
+            }
+            Err(error) => {
+                warnings.push(format!("Canvas file listing unavailable: {error}"));
+                Paged {
+                    items: Vec::new(),
+                    complete: false,
+                    next_cursor: None,
+                }
+            }
+        };
+        let mut catalog = material_catalog(course_id, &modules, &files.items);
+        let board_items = match self.learningx_board_materials(course_id, week).await {
+            Ok(items) => items,
+            Err(error) => {
+                warnings.push(format!("LearningX board materials unavailable: {error}"));
+                Vec::new()
+            }
+        };
+        let mut seen: HashSet<String> = catalog
+            .iter()
+            .map(|material| material.resource_id.clone())
+            .collect();
+        for material in board_items {
+            if seen.insert(material.resource_id.clone()) {
+                catalog.push(material);
+            }
+        }
+        Ok(MaterialView {
+            catalog,
+            modules,
+            complete: files.complete && warnings.is_empty(),
+            warnings,
+            notes,
+        })
     }
 
     /// Unified Commons/Canvas material list with filters and pagination.
@@ -552,50 +1188,46 @@ impl EClassService {
         limit: usize,
     ) -> Result<Value, EclassError> {
         if !(1..=100).contains(&limit) {
-            return Err(EclassError::InvalidPageRange);
+            return Err(EclassError::InvalidArgument(
+                "limit must be between 1 and 100".to_string(),
+            ));
         }
-        let modules = self.modules(course_id).await?;
-        let mut warnings = Vec::new();
-        let files = match self
-            .paged(
-                &format!("/api/v1/courses/{course_id}/files?per_page=100"),
-                false,
-                20,
-            )
-            .await
-        {
-            Ok(files) => files,
-            Err(_) => {
-                warnings
-                    .push("Canvas file listing unavailable; weekly materials are still included");
-                Paged {
-                    items: Vec::new(),
-                    complete: false,
-                    next_cursor: None,
-                }
-            }
-        };
-        let items = filter_materials(
-            &material_catalog(course_id, &modules, &files.items),
-            week,
-            query,
-            content_type,
-        );
+        let view = self.material_view(course_id, week).await?;
+        let items = filter_materials(&view.catalog, week, query, content_type);
         let total = items.len();
-        let next_offset = (offset + limit < total).then_some(offset + limit);
+        let next = (offset + limit < total).then(|| json!(offset + limit));
         let page = items
             .iter()
             .skip(offset)
             .take(limit)
             .cloned()
             .collect::<Vec<_>>();
+        let catalog_week = view
+            .catalog
+            .iter()
+            .flat_map(|material| {
+                material
+                    .weeks
+                    .clone()
+                    .unwrap_or_else(|| material.week.into_iter().collect())
+            })
+            .max();
+        // Modules and board titles are already in the catalog; no extra pass.
+        let current_week = module_weeks(&view.modules)
+            .last()
+            .copied()
+            .max(catalog_week);
         Ok(json!({
             "items": page,
             "total": total,
-            "complete": files.complete && next_offset.is_none(),
-            "has_more": next_offset.is_some(),
-            "next_offset": next_offset,
-            "warnings": warnings
+            "complete": view.complete && next.is_none(),
+            "has_more": next.is_some(),
+            "next": next,
+            "next_param": next.is_some().then_some("offset"),
+            "current_week": current_week,
+            "sources": ["commons", "canvas_file", "learningx_board"],
+            "warnings": view.warnings,
+            "notes": view.notes
         }))
     }
 
@@ -603,11 +1235,12 @@ impl EClassService {
         &self,
         resource_id: &str,
     ) -> Result<(Material, (Option<String>, Option<String>)), EclassError> {
-        let (source, course_id, source_id) = parse_resource_id(resource_id)?;
-        if source == "canvas" {
+        let resource = parse_resource_id(resource_id)?;
+        if resource.source == "canvas" {
+            let source_id = resource.source_id().ok_or(EclassError::MaterialNotFound)?;
             let file = self
                 .get(
-                    &format!("/api/v1/courses/{course_id}/files/{source_id}"),
+                    &format!("/api/v1/courses/{}/files/{source_id}", resource.course_id),
                     false,
                     false,
                 )
@@ -615,7 +1248,7 @@ impl EClassService {
             if file.get("id").and_then(positive_u64) != Some(u64::from(source_id)) {
                 return Err(EclassError::MaterialNotFound);
             }
-            let catalog = material_catalog(course_id, &[], std::slice::from_ref(&file));
+            let catalog = material_catalog(resource.course_id, &[], std::slice::from_ref(&file));
             let material = catalog
                 .into_iter()
                 .next()
@@ -633,11 +1266,42 @@ impl EClassService {
             );
             return Ok((material, revision));
         }
-        let modules = self.modules(course_id).await?;
-        let catalog = material_catalog(course_id, &modules, &[]);
+        if resource.source == "board" {
+            let board_id = resource.parts[0];
+            let post_id = resource.parts[1];
+            let attachment_id = resource.parts[2];
+            let mut post = self
+                .get(
+                    &format!(
+                        "/learningx/api/v1/learningx_board/courses/{}/boards/{board_id}/posts/{post_id}",
+                        resource.course_id
+                    ),
+                    true,
+                    false,
+                )
+                .await?;
+            if let Some(object) = post.as_object_mut() {
+                object.insert("board_id".to_string(), json!(board_id));
+            }
+            let material = board_materials(resource.course_id, &[post])
+                .into_iter()
+                .find(|item| item.attachment_id == Some(attachment_id))
+                .ok_or(EclassError::MaterialNotFound)?;
+            if !material.available {
+                return Err(EclassError::MaterialUnavailable);
+            }
+            let revision = (material.updated_at.clone(), material.created_at.clone());
+            return Ok((material, revision));
+        }
+        let source_id = resource.source_id().ok_or(EclassError::MaterialNotFound)?;
+        let modules = self.modules(resource.course_id).await?;
+        let catalog = material_catalog(resource.course_id, &modules, &[]);
         let material = catalog
             .into_iter()
-            .find(|item| item.resource_id == resource_id)
+            .find(|item| {
+                item.source == "commons"
+                    && item.resource_id == format!("commons:{}:{source_id}", resource.course_id)
+            })
             .ok_or(EclassError::MaterialNotFound)?;
         if !material.available {
             return Err(EclassError::MaterialUnavailable);
@@ -662,8 +1326,10 @@ impl EClassService {
         {
             return Ok(cached.result.clone());
         }
+        let resource = parse_resource_id(resource_id)?;
+        let course_id = resource.course_id;
+        let source_id = resource.source_id().ok_or(EclassError::MaterialNotFound)?;
         let (mut result, destination) = if material.source == "canvas" {
-            let (_, course_id, source_id) = parse_resource_id(resource_id)?;
             let mut value = self.download_attachment(course_id, source_id).await?;
             let destination = value.get("path").and_then(Value::as_str).map(PathBuf::from);
             if let Some(object) = value.as_object_mut() {
@@ -671,8 +1337,50 @@ impl EClassService {
                 object.insert("original".to_string(), json!(true));
             }
             (value, destination)
+        } else if material.source == "learningx_board" {
+            let url = material
+                .download_url
+                .clone()
+                .ok_or(EclassError::MaterialUnavailable)?;
+            std::fs::create_dir_all(&self.output_dir)?;
+            let extension = Path::new(&material.title)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("bin");
+            let stem = Path::new(&safe_filename(&material.title))
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("material")
+                .to_string();
+            let path = self.output_dir.join(format!(
+                "{stem}-{}.{}",
+                unique_suffix(),
+                safe_filename(extension)
+            ));
+            let downloaded = self
+                .transport
+                .download_url(&url, &path, 64 * 1024 * 1024, None)
+                .await;
+            let downloaded = match downloaded {
+                Ok(downloaded) => downloaded,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(error);
+                }
+            };
+            let value = json!({
+                "path": path,
+                "bytes": downloaded.bytes,
+                "sha256": file_sha256(&path)?,
+                "content_type": downloaded.content_type,
+                "source": "learningx_board",
+                "original": true,
+                "board_id": material.board_id,
+                "post_id": material.post_id,
+                "attachment_id": material.attachment_id
+            });
+            (value, Some(path))
         } else {
-            let (_, course_id, source_id) = parse_resource_id(resource_id)?;
             std::fs::create_dir_all(&self.output_dir)?;
             let path = self.output_dir.join(format!(
                 "material-{course_id}-{source_id}-{}.pdf",
@@ -772,11 +1480,15 @@ impl EClassService {
         end: &str,
     ) -> Result<Value, EclassError> {
         let result = announcements_on(&self.transport, u64::from(course_id), start, end).await?;
-        Ok(json!({
-            "items": result.items,
-            "complete": result.complete,
-            "next_cursor": result.next_cursor
-        }))
+        let truncated = result.next_cursor.is_some();
+        let mut payload = list_response(result.items, result.complete && !truncated, None, None);
+        if truncated && let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "warnings".to_string(),
+                json!(["more announcements exist beyond the page limit; narrow the date range"]),
+            );
+        }
+        Ok(payload)
     }
 
     /// Announcement/discussion detail.
@@ -790,13 +1502,32 @@ impl EClassService {
     }
 
     /// Assignments with the current user's submission.
-    pub async fn assignments(&self, course_id: u32) -> Result<Paged, EclassError> {
-        self.paged(
-            &format!("/api/v1/courses/{course_id}/assignments?include[]=submission&per_page=100"),
-            false,
-            20,
-        )
-        .await
+    ///
+    /// The default view is compact so MCP clients do not receive full Canvas
+    /// HTML and verifier-bearing URLs on every call.
+    pub async fn assignments(&self, course_id: u32, detail: bool) -> Result<Paged, EclassError> {
+        let paged = self
+            .paged(
+                &format!(
+                    "/api/v1/courses/{course_id}/assignments?include[]=submission&per_page=100"
+                ),
+                false,
+                20,
+            )
+            .await?;
+        if detail {
+            return Ok(paged);
+        }
+        let items = paged
+            .items
+            .iter()
+            .map(compact_assignment)
+            .collect::<Vec<_>>();
+        Ok(Paged {
+            items,
+            complete: paged.complete,
+            next_cursor: paged.next_cursor,
+        })
     }
 
     /// Assignment detail.
@@ -831,7 +1562,7 @@ impl EClassService {
 
     /// Assignment and LearningX deadlines.
     pub async fn deadlines(&self, course_id: u32) -> Result<Value, EclassError> {
-        let assignments = self.assignments(course_id).await?;
+        let assignments = self.assignments(course_id, true).await?;
         let mut items = Vec::new();
         for assignment in &assignments.items {
             let mut item = Map::new();
@@ -938,12 +1669,36 @@ impl EClassService {
                 .filter(|url| url.contains("rpt80.cau.ac.kr"))
                 .collect();
         }
+        let available = !text.is_empty();
+        let has_viewers = !viewers.is_empty();
+        let mut notes = Vec::new();
+        let mut warnings = Vec::new();
+        if !available && has_viewers {
+            notes.push(
+                "The syllabus is an OZ viewer document; its text is not embedded in the Canvas page."
+                    .to_string(),
+            );
+            warnings.push("External viewer document content is not extracted".to_string());
+        }
+        if !available && !has_viewers {
+            notes.push("No syllabus was published for this course.".to_string());
+        }
+        let suggested_tool = (!available && has_viewers).then(|| {
+            json!({
+                "tool": "download_syllabus_pdf",
+                "arguments": {"course_id": course_id},
+                "requires": "optional eclass-oz-export helper (Python `oz` extra with Playwright)"
+            })
+        });
         Ok(json!({
             "course_id": course_id,
             "text": text,
+            "available": available,
             "viewer_urls": viewers,
-            "complete": viewers.is_empty() && !text.is_empty(),
-            "warnings": if viewers.is_empty() { Vec::<String>::new() } else { vec!["External viewer document content is not extracted".to_string()] }
+            "suggested_tool": suggested_tool,
+            "complete": available,
+            "warnings": warnings,
+            "notes": notes
         }))
     }
 
@@ -1062,10 +1817,17 @@ impl EClassService {
             )
             .await?;
         let complete = body.is_array();
+        let items: Vec<Value> = body
+            .as_array()
+            .map(|boards| boards.iter().map(compact_board).collect())
+            .unwrap_or_default();
         Ok(json!({
-            "data": body,
+            "items": items,
+            "total": items.len(),
             "complete": complete,
-            "warnings": if complete { Vec::<String>::new() } else { vec!["Provider pagination schema requires inspection".to_string()] }
+            "has_more": false,
+            "next": null,
+            "warnings": if complete { Vec::<String>::new() } else { vec!["provider returned an unexpected board payload".to_string()] }
         }))
     }
 
@@ -1076,13 +1838,18 @@ impl EClassService {
         board_id: u32,
         page: u32,
     ) -> Result<Value, EclassError> {
-        let body = self
+        let mut body = self
             .get(
                 &format!("/learningx/api/v1/learningx_board/courses/{course_id}/boards/{board_id}/posts?page={page}"),
                 true,
                 false,
             )
             .await?;
+        if let Some(posts) = body.get_mut("items").and_then(Value::as_array_mut) {
+            for post in posts {
+                add_seoul_timestamps(post);
+            }
+        }
         let pagination = body.get("pagination").and_then(Value::as_object);
         let current = pagination
             .and_then(|value| value.get("current_page"))
@@ -1091,15 +1858,33 @@ impl EClassService {
             .and_then(|value| value.get("last_page"))
             .and_then(Value::as_u64);
         let known = current.is_some() && last.is_some();
-        let has_more = current.zip(last).map(|(current, last)| current < last);
-        Ok(json!({
-            "data": body,
-            "page": page,
-            "complete": known && current == Some(1) && last == Some(1),
-            "has_more": has_more,
-            "next_page": current.zip(last).filter(|(current, last)| current < last).map(|(current, _)| current + 1),
-            "warnings": if known { Vec::<String>::new() } else { vec!["Provider pagination could not be established".to_string()] }
-        }))
+        let next = current
+            .zip(last)
+            .filter(|(current, last)| current < last)
+            .map(|(current, _)| json!(current + 1));
+        let items = body
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut payload = list_response(items, known && next.is_none(), next, Some("page"));
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("page".to_string(), json!(page));
+            object.insert(
+                "pagination".to_string(),
+                pagination
+                    .cloned()
+                    .map(Value::Object)
+                    .unwrap_or(Value::Null),
+            );
+            if !known {
+                object.insert(
+                    "warnings".to_string(),
+                    json!(["provider pagination could not be established"]),
+                );
+            }
+        }
+        Ok(payload)
     }
 
     /// LearningX post detail.
@@ -1109,12 +1894,15 @@ impl EClassService {
         board_id: u32,
         post_id: u32,
     ) -> Result<Value, EclassError> {
-        self.get(
-            &format!("/learningx/api/v1/learningx_board/courses/{course_id}/boards/{board_id}/posts/{post_id}"),
-            true,
-            false,
-        )
-        .await
+        let mut value = self
+            .get(
+                &format!("/learningx/api/v1/learningx_board/courses/{course_id}/boards/{board_id}/posts/{post_id}"),
+                true,
+                false,
+            )
+            .await?;
+        add_seoul_timestamps(&mut value);
+        Ok(value)
     }
 
     /// Current-user groups.
@@ -1122,11 +1910,7 @@ impl EClassService {
         let result = self
             .paged("/api/v1/users/self/groups?per_page=100", false, 20)
             .await?;
-        Ok(json!({
-            "items": result.items,
-            "complete": result.complete,
-            "next_cursor": result.next_cursor
-        }))
+        Ok(list_response(result.items, result.complete, None, None))
     }
 
     /// Accessible discussions/files for a verified current-user group.
@@ -1158,8 +1942,8 @@ impl EClassService {
             )
             .await?;
         Ok(json!({
-            "discussions": {"items": discussions.items, "complete": discussions.complete, "next_cursor": discussions.next_cursor},
-            "files": {"items": files.items, "complete": files.complete, "next_cursor": files.next_cursor}
+            "discussions": list_response(discussions.items, discussions.complete, None, None),
+            "files": list_response(files.items, files.complete, None, None)
         }))
     }
 
@@ -1647,7 +2431,10 @@ fn action(code: &str, message: &str, command: Option<&str>) -> Value {
 fn is_session_expired(error: &EclassError) -> bool {
     matches!(
         error,
-        EclassError::SessionExpired | EclassError::LoginRedirect | EclassError::Http(401)
+        EclassError::SessionExpired
+            | EclassError::CanvasSessionExpired
+            | EclassError::LoginRedirect
+            | EclassError::Http(401)
     )
 }
 
@@ -1728,7 +2515,7 @@ async fn announcements_on(
     paged_on(transport, &path, false, 20).await
 }
 
-fn default_output_dir() -> PathBuf {
+pub(crate) fn default_output_dir() -> PathBuf {
     if let Some(value) = std::env::var_os("ECLASS_DOWNLOAD_DIR") {
         return expand_home(&value.to_string_lossy());
     }
@@ -1798,6 +2585,208 @@ fn select(value: &Value, keys: &[&str]) -> Value {
     Value::Object(selected)
 }
 
+/// The one shape every list tool returns.
+pub(crate) fn list_response(
+    items: Vec<Value>,
+    complete: bool,
+    next: Option<Value>,
+    next_param: Option<&str>,
+) -> Value {
+    json!({
+        "items": items,
+        "complete": complete,
+        "has_more": next.is_some(),
+        "next": next,
+        "next_param": next_param.filter(|_| next.is_some())
+    })
+}
+
+fn compact_course(course: &Value) -> Value {
+    let term = course_term_name(course);
+    let enrollment_state = course
+        .get("enrollments")
+        .and_then(Value::as_array)
+        .and_then(|enrollments| enrollments.first())
+        .and_then(|enrollment| enrollment.get("enrollment_state"));
+    json!({
+        "course_id": course.get("id").and_then(positive_u64).map_or(Value::Null, |id| json!(id)),
+        "name": course.get("name").cloned().unwrap_or(Value::Null),
+        "course_code": course.get("course_code").cloned().unwrap_or(Value::Null),
+        "term": term.map_or(Value::Null, |term| json!(term)),
+        "workflow_state": course.get("workflow_state").cloned().unwrap_or(Value::Null),
+        "enrollment_state": enrollment_state.cloned().unwrap_or(Value::Null)
+    })
+}
+
+fn compact_board(board: &Value) -> Value {
+    json!({
+        "board_id": board.get("id").cloned().unwrap_or(Value::Null),
+        "title": board.get("title").cloned().unwrap_or(Value::Null),
+        "slug": board.get("slug").cloned().unwrap_or(Value::Null),
+        "type": board.get("type").cloned().unwrap_or(Value::Null),
+        "description": board.get("description").cloned().unwrap_or(Value::Null),
+        "total_post_count": board.get("total_post_count").cloned().unwrap_or(Value::Null),
+        "latest_post_created_at": board.get("latest_post_created_at").cloned().unwrap_or(Value::Null)
+    })
+}
+
+fn course_term_name(course: &Value) -> Option<&str> {
+    let term = course.get("term")?;
+    term.get("name")
+        .and_then(Value::as_str)
+        .or_else(|| term.as_str())
+}
+
+fn course_term_key(course: &Value) -> Option<(i32, u32)> {
+    course_term_name(course).and_then(term_key)
+}
+
+/// The academic term that contains today, as observed in the course list.
+fn current_term(courses: &[Value]) -> Option<((i32, u32), String)> {
+    let now = Utc::now().with_timezone(&Seoul);
+    let target = term_key_for_month(now.year(), now.month());
+    let mut best: Option<((i32, u32), String)> = None;
+    for course in courses {
+        let Some(name) = course_term_name(course) else {
+            continue;
+        };
+        let Some(key) = term_key(name) else {
+            continue;
+        };
+        if key > target {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(current, _)| key > *current) {
+            best = Some((key, name.to_string()));
+        }
+    }
+    best
+}
+
+fn module_weeks(modules: &[Value]) -> Vec<u32> {
+    let mut weeks: Vec<u32> = modules
+        .iter()
+        .filter_map(|module| {
+            ["week_position", "week", "position"]
+                .iter()
+                .find_map(|key| module.get(*key).and_then(positive_u64))
+                .and_then(|value| u32::try_from(value).ok())
+                .or_else(|| {
+                    module
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .and_then(week_from_title)
+                })
+        })
+        .collect();
+    weeks.sort_unstable();
+    weeks.dedup();
+    weeks
+}
+
+fn format_weeks(weeks: &[u32]) -> String {
+    if weeks.is_empty() {
+        return "none".to_string();
+    }
+    let shown = weeks
+        .iter()
+        .take(12)
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if weeks.len() > 12 {
+        format!("{shown}, …")
+    } else {
+        shown
+    }
+}
+
+fn normalized(value: Option<&str>) -> String {
+    value
+        .unwrap_or_default()
+        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn sort_courses_for_briefing(courses: &mut [Value]) {
+    let now = Utc::now().with_timezone(&Seoul);
+    let target = term_key_for_month(now.year(), now.month());
+    courses.sort_by(|left, right| {
+        let left_term = course_term_key(left);
+        let right_term = course_term_key(right);
+        let left_current = left_term == Some(target);
+        let right_current = right_term == Some(target);
+        right_current
+            .cmp(&left_current)
+            .then_with(|| right_term.cmp(&left_term))
+            .then_with(|| {
+                let left_name = left.get("name").and_then(Value::as_str).unwrap_or_default();
+                let right_name = right
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                left_name.cmp(right_name)
+            })
+    });
+}
+
+fn add_seoul_timestamps(value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    for key in ["created_at", "updated_at", "latest_comment_created_at"] {
+        let Some(raw) = object.get(key).and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        if let Ok(date) = DateTime::parse_from_rfc3339(&raw) {
+            object.insert(
+                format!("{key}_seoul"),
+                json!(
+                    date.with_timezone(&Seoul)
+                        .to_rfc3339_opts(SecondsFormat::AutoSi, false)
+                ),
+            );
+        }
+    }
+}
+
+fn compact_assignment(assignment: &Value) -> Value {
+    let mut item = Map::new();
+    for key in [
+        "id",
+        "name",
+        "points_possible",
+        "html_url",
+        "locked_for_user",
+    ] {
+        if let Some(value) = assignment.get(key) {
+            item.insert(key.to_string(), value.clone());
+        }
+    }
+    item.extend(date_fields(assignment));
+    if let Some(submission) = assignment.get("submission") {
+        item.insert(
+            "submission".to_string(),
+            select(
+                submission,
+                &[
+                    "id",
+                    "workflow_state",
+                    "submitted_at",
+                    "score",
+                    "grade",
+                    "attempt",
+                    "late",
+                    "missing",
+                ],
+            ),
+        );
+    }
+    Value::Object(item)
+}
+
 fn date_fields(value: &Value) -> Map<String, Value> {
     let mut result = Map::new();
     for key in ["unlock_at", "late_at", "due_at", "lock_at"] {
@@ -1863,7 +2852,15 @@ pub fn clean(value: Value) -> Value {
                 object
                     .into_iter()
                     .filter(|(key, _)| {
-                        !secret.as_ref().is_some_and(|pattern| pattern.is_match(key))
+                        let public_status = matches!(
+                            key.as_str(),
+                            "learningx_token"
+                                | "learningx_token_age_secs"
+                                | "learningx_ok"
+                                | "token_present"
+                        );
+                        public_status
+                            || !secret.as_ref().is_some_and(|pattern| pattern.is_match(key))
                     })
                     .map(|(key, value)| (key, clean(value)))
                     .collect(),
@@ -1895,6 +2892,33 @@ mod tests {
     }
 
     #[test]
+    fn briefing_puts_current_term_first() {
+        let mut courses = vec![
+            json!({"name": "Old", "term": {"name": "2021년 1학기"}}),
+            json!({"name": "New", "term": {"name": "2026년 2학기"}}),
+        ];
+        sort_courses_for_briefing(&mut courses);
+        assert_eq!(courses[0]["name"], "New");
+    }
+
+    #[test]
+    fn compact_assignment_removes_description_and_keeps_dates() {
+        let value = compact_assignment(&json!({
+            "id": "7",
+            "name": "Problem Set",
+            "description": "<p>long html</p>",
+            "due_at": "2026-11-20T14:59:00Z",
+            "submission": {"workflow_state": "submitted", "score": 9}
+        }));
+        assert!(value.get("description").is_none());
+        assert_eq!(
+            value.get("due_at_seoul").and_then(Value::as_str),
+            Some("2026-11-20T23:59:00+09:00")
+        );
+        assert_eq!(value["submission"]["score"], 9);
+    }
+
+    #[test]
     fn clean_removes_secret_keys_and_redacts_urls() {
         let value = clean(json!({
             "access_token": "secret",
@@ -1903,5 +2927,17 @@ mod tests {
         let text = value.to_string();
         assert!(!text.contains("secret"));
         assert!(text.contains("wrap=1"));
+    }
+
+    #[test]
+    fn clean_keeps_public_token_status_fields() {
+        let value = clean(json!({
+            "learningx_token": true,
+            "learningx_token_age_secs": 12,
+            "access_token": "secret"
+        }));
+        assert_eq!(value["learningx_token"], true);
+        assert_eq!(value["learningx_token_age_secs"], 12);
+        assert!(value.get("access_token").is_none());
     }
 }

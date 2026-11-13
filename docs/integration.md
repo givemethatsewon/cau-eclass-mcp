@@ -21,17 +21,21 @@
 - Rust MCP는 `eclass-mcp login`/`onboard`가 저장한 세션으로 HTTP 요청을 보냅니다. 세션 파일은 `.cau.ac.kr` 쿠키만 담고 `0600`으로 저장하며, 서명 URL·본문·비밀번호는 저장하지 않습니다.
 - 캐시는 기본 20초 TTL이며 `ECLASS_CACHE_TTL`로 조정합니다. 쓰기 후에는 서비스가 캐시를 비웁니다.
 - 401 또는 로그인 HTML을 만나면 저장된 Chrome 프로필에서 쿠키를 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`). 프로필이 없거나 잠겨 있으면 `eclass-mcp login`을 안내합니다.
+- LearningX 401은 강좌 페이지의 LTI 폼을 저장된 쿠키로 다시 POST해 `xn_api_token`을 발급합니다. Canvas 쿠키가 만료됐으면 `eclass-mcp auth refresh --via aside`가 로그인된 Aside 브라우저에서 토큰만 회수합니다.
 - Canvas와 LearningX의 인증 방식 차이는 전송 계층에서 처리합니다. 인증값과 서명 URL은 도구 응답·로그·설정에 저장하지 않습니다.
 - 일반 조회는 같은 origin의 허용된 상대경로를 사용합니다. 파일 다운로드는 호스트 허용 목록과 리다이렉트별 인증 범위를 검사합니다.
 - FastMCP, Aside, CDP는 제거했습니다. 로그인과 세션 갱신은 Chrome 프로필 쿠키를 직접 읽으며 remote debugging 포트를 사용하지 않습니다.
 
 ## 요약과 완전성
 
-- `get_briefing`은 수강 과목, Canvas todo 마감, 최근 공지를 한 번에 반환합니다. 공지는 최대 4개 과목씩 병렬 조회하고, 일부 실패는 `complete=false`와 `warnings`로 표시합니다.
+- `get_briefing`은 **현재 학기** 수강 과목, 앞으로 `days`일 안의 마감, 최근 `days`일 공지, 이미 지난 마감(`overdue`)을 한 번에 반환합니다. `windows.deadlines`는 오늘부터 미래, `windows.announcements`는 과거 구간이며 모든 시각은 `Asia/Seoul` 기준입니다. 공지는 최대 4개 과목씩 병렬 조회하고, 일부 실패는 `complete=false`와 `warnings`로 표시합니다.
 - `list_todo`는 `/api/v1/users/self/todo`를 그대로 반환합니다.
-- 도구 응답은 `observed_at`과 `result`로 구성됩니다. `list_courses`는 과목명/코드 검색과 학기 ID/이름 필터를 제공합니다.
+- 도구 응답은 `observed_at`과 `result`로 구성됩니다. `list_courses`는 기본으로 **오늘 기준 학기**의 과목만 압축 해 반환하고(`course_id`, `name`, `term`, `workflow_state`), `term` 또는 `all_terms=true`로 넓힙니다. 응답의 `visible`은 필터 전 전체 과목 수입니다.
+- 목록 도구의 공통 봉투는 `items`, `complete`, `has_more`, `next`, `next_param`입니다. `has_more=true`이면 `next`를 `next_param`이 가리키는 인자에 그대로 넣어 이어 읽습니다(오프셋은 `offset`, 게시판은 `page`). Canvas 목록은 서버가 다음 페이지를 추적하므로 `next`가 없고, 페이지 한도에서 잘리면 `complete=false`와 `warnings`로 알립니다.
+- 과목명 해석은 현재 학기 → 전체 학기 순으로 찾고, 후보가 둘 이상이면 임의로 고르지 않고 `AMBIGUOUS_COURSE`와 `details.candidates[].course_id`를 반환합니다. 알 수 없는 인자나 누락된 필수 인자는 `INVALID_ARGUMENT`로 거부합니다.
 - `list_learning_items`는 필터 가능한 간결한 주차 구조가 기본이고, `detail=true`로 기존 중첩 메타데이터를 읽습니다. 내부 서비스의 원본 모듈 조회는 마감일·영상 조회를 위해 유지합니다.
-- `list_materials`는 Commons 주차자료와 Canvas 파일을 합친 목록입니다. `week`, 제목 `query`, `content_type`을 함께 적용하고 기본 20개·최대 100개를 반환합니다. `next_offset`으로 이어 읽으며, 상위 소스 조회 실패 또는 아직 반환하지 않은 결과가 있으면 `complete=false`입니다. 재사용된 자료 ID는 중복 제거하되 `weeks`에 모든 관측 주차를 남깁니다.
+- `list_materials`는 Commons 주차자료와 Canvas 파일을 합친 목록입니다. `week`, 제목 `query`, `content_type`을 함께 적용하고 기본 20개·최대 100개를 반환합니다. 상위 소스 조회 실패 또는 아직 반환하지 않은 결과가 있으면 `complete=false`입니다. 재사용된 자료 ID는 중복 제거하되 `weeks`에 모든 관측 주차를 남깁니다.
+- `get_week_materials`는 `week`를 생략하면 **자료가 있는 마지막 주차**를 고르고 `weeks_with_materials`, `course_weeks`, `latest_week`를 함께 알려 줍니다. 과정에 없는 주차를 요청하면 빈 목록 대신 `warnings`로 사용 가능한 주차를 안내합니다.
 - 목록은 `complete`와 페이지 정보를 확인합니다. Canvas 목록은 `Link`의 다음 페이지를 추적하고, LearningX 게시판은 요청한 한 페이지의 결과임을 표시합니다.
 - 로그인 HTML이나 예상과 다른 응답을 빈 목록으로 처리하지 않습니다. 조회 실패와 데이터 없음은 구분합니다.
 - `due_at`, `late_at`, `unlock_at`, `lock_at`을 구분하고 원본 시각과 Asia/Seoul 표시를 유지합니다.

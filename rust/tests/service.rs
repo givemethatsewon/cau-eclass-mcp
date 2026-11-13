@@ -74,7 +74,7 @@ async fn session_status_and_courses() {
     let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
     let status = service.session_status().await.unwrap();
     assert_eq!(status["authenticated"], true);
-    let courses = service.courses(Some("algo"), None).await.unwrap();
+    let courses = service.courses(Some("algo"), None, false).await.unwrap();
     assert_eq!(courses["items"].as_array().unwrap().len(), 1);
     assert_eq!(courses["items"][0]["name"], "Algorithms");
 }
@@ -132,12 +132,18 @@ async fn onboarding_status_reports_ready() {
         ])))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/learningx_board/courses/1/boards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
     let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
     let status = service.onboarding_status().await;
     assert_eq!(status["schema_version"], 1);
     assert_eq!(status["session_state"], "authenticated");
     assert_eq!(status["authenticated"], true);
     assert_eq!(status["learningx_token"], true);
+    assert_eq!(status["learningx_ok"], true);
     assert_eq!(status["courses_visible"], 1);
     assert_eq!(status["ready"], true);
     let actions = status["next_actions"].as_array().unwrap();
@@ -443,4 +449,231 @@ printf '{"path":"%s","bytes":%s,"sha256":"`zeros`","page_count":1,"text":"fixtur
     assert_eq!(result["course_id"], 1);
     assert_eq!(result["page_count"], 1);
     assert!(result["path"].as_str().unwrap().ends_with("syllabus-1.pdf"));
+}
+
+#[tokio::test]
+async fn materials_merge_learningx_board_attachments() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/courses/1/modules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"module_id": 10, "title": "5주차", "position": 5, "module_items": []}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/courses/1/files"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"status": "권한이 없음"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/learningx_board/courses/1/boards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 2, "title": "강의자료실", "total_post_count": 1}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/learningx_board/courses/1/boards/2/posts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [
+                {"id": 3, "title": "제 11주차 강의자료", "created_at": "2026-11-12T14:51:54Z", "attachment_count": 1}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/learningx_board/courses/1/boards/2/posts/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 3,
+            "title": "제 11주차 강의자료",
+            "created_at": "2026-11-12T14:51:54Z",
+            "attachments": [
+                {"id": 4, "filename": "notes.pdf", "url": "https://eclass3.cau.ac.kr/files/4/download"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
+    let value = service.materials(1, None, None, None, 0, 20).await.unwrap();
+    assert_eq!(value["current_week"], 11);
+    assert_eq!(value["complete"], true);
+    let items = value["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["resource_id"], "board:1:2:3:4");
+    assert_eq!(items[0]["week"], 11);
+    assert_eq!(items[0]["source"], "learningx_board");
+    assert!(
+        value["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap_or_default().contains("students"))
+    );
+}
+
+#[tokio::test]
+async fn week_materials_defaults_to_the_latest_week() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/courses/1/modules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"module_id": 10, "title": "10주차", "position": 10, "module_items": []}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/courses/1/files"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/learningx_board/courses/1/boards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 2, "title": "강의자료실"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/learningx/api/v1/learningx_board/courses/1/boards/2/posts",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [
+                {"id": 3, "title": "제 11주차 강의자료", "created_at": "2026-11-12T14:51:54Z", "attachment_count": 1},
+                {"id": 4, "title": "제 10주차 강의자료", "created_at": "2026-11-05T14:51:54Z", "attachment_count": 1}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/learningx_board/courses/1/boards/2/posts/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 3,
+            "title": "제 11주차 강의자료",
+            "attachments": [{"id": 5, "filename": "week11.pdf", "url": "https://eclass3.cau.ac.kr/files/5/download"}]
+        })))
+        .mount(&server)
+        .await;
+    let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
+    let value = service.week_materials(1, None).await.unwrap();
+    assert_eq!(value["week"], 11);
+    assert_eq!(value["items"].as_array().unwrap().len(), 1);
+    assert_eq!(value["items"][0]["resource_id"], "board:1:2:3:5");
+}
+
+#[tokio::test]
+async fn resolve_course_prefers_the_current_term_and_rejects_ambiguity() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/courses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "name": "Programming 02", "term": {"id": "96", "name": "2026 Fall"}},
+            {"id": 2, "name": "Programming 01", "term": {"id": "96", "name": "2026 Fall"}},
+            {"id": 3, "name": "Programming 02", "term": {"id": "23", "name": "2025 Fall"}},
+            {"id": 4, "name": "Discrete Math", "term": {"id": "96", "name": "2026 Fall"}}
+        ])))
+        .mount(&server)
+        .await;
+    let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
+
+    // Exact name, current term wins over the older section with the same name.
+    assert_eq!(service.resolve_course("Programming 02").await.unwrap(), 1);
+    // Unique substring.
+    assert_eq!(service.resolve_course("Discrete").await.unwrap(), 4);
+    // Two current-term sections: fail loudly with candidates, never guess.
+    match service.resolve_course("Programming").await {
+        Err(EclassError::AmbiguousCourse {
+            count, candidates, ..
+        }) => {
+            assert_eq!(count, 2);
+            let mut ids: Vec<u64> = candidates
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|candidate| candidate["course_id"].as_u64())
+                .collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec![1, 2]);
+        }
+        other => panic!("expected ambiguity, got {other:?}"),
+    }
+    assert!(matches!(
+        service.resolve_course("Networks").await,
+        Err(EclassError::CourseNotFound)
+    ));
+}
+
+#[tokio::test]
+async fn briefing_separates_overdue_deadlines_from_upcoming_ones() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/courses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "name": "Algorithms", "term": {"id": "96", "name": "2026 Fall"}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/self/todo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"type": "submitting", "course_id": "1", "context_name": "Algorithms",
+             "assignment": {"id": "1", "name": "Past", "due_at": "2020-01-01T00:00:00Z"}},
+            {"type": "submitting", "course_id": "1", "context_name": "Algorithms",
+             "assignment": {"id": "2", "name": "Soon", "due_at": "2999-01-01T00:00:00Z"}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/announcements"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
+    let briefing = service.briefing(14, 5).await.unwrap();
+    assert_eq!(briefing["counts"]["deadlines"], 0);
+    assert_eq!(briefing["counts"]["overdue"], 1);
+    assert_eq!(briefing["counts"]["deadlines_beyond_window"], 1);
+    assert_eq!(briefing["overdue"][0]["title"], "Past");
+    assert_eq!(briefing["timezone"], "Asia/Seoul");
+    assert!(briefing["windows"]["deadlines"]["end_date"].is_string());
+}
+
+#[tokio::test]
+async fn week_materials_reports_an_unknown_week_instead_of_guessing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/courses/1/modules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"module_id": 1, "title": "1주차", "position": 1, "module_items": [{
+                "title": "Intro", "content_type": "commons", "content_id": 9,
+                "content_data": {"item_id": 9, "course_id": 1, "item_content_type": "commons",
+                                 "opened": true, "item_content_data": {"content_type": "pdf", "file_name": "intro.pdf"}}
+            }]}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/courses/1/files"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/learningx/api/v1/learningx_board/courses/1/boards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let service = service(&server, tempfile::tempdir().unwrap().keep()).await;
+    let value = service.week_materials(1, None).await.unwrap();
+    assert_eq!(value["week"], 1);
+    assert_eq!(value["weeks_with_materials"], json!([1]));
+    let empty = service.week_materials(1, Some(9)).await.unwrap();
+    assert_eq!(empty["items"], json!([]));
+    assert!(
+        empty["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap_or_default().contains("outside"))
+    );
 }

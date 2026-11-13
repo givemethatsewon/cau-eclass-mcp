@@ -4,7 +4,7 @@
 
 ```text
 MCP client
-  → Rust stdio server (27 tools)
+  → Rust stdio server (28 tools)
   → EClassService (pagination, dates, briefing, validation)
   → HttpTransport (TTL cache + single-flight, cookie jar)
       ├ Canvas /api/v1 + LearningX /learningx/api/v1
@@ -18,6 +18,7 @@ MCP client
 2. 서버가 Chrome 프로필의 쿠키 DB를 직접 읽어 `.cau.ac.kr` 쿠키를 `session.json`에 저장한다. HttpOnly 쿠키를 포함하며, remote debugging 포트는 열지 않는다.
 3. 이후 `HttpTransport`가 쿠키 jar와 `xn_api_token` Bearer 헤더로 Canvas/LearningX JSON을 직접 요청한다.
 4. 401·로그인 HTML을 만나면 저장된 Chrome 프로필에서 쿠키를 다시 읽는다. 프로필이 없거나 잠겨 있으면 `eclass-mcp login`을 안내한다.
+5. LearningX 401은 강좌 페이지의 LTI 폼을 저장된 쿠키로 다시 POST해 토큰을 스스로 발급한다. 그래도 실패하면 `auth refresh --via aside`가 로그인된 Aside 브라우저에서 토큰만 회수한다.
 
 이 구조의 핵심 이점:
 
@@ -53,7 +54,7 @@ Rust MCP는 이 도구를 받으면 선택적 `eclass-oz-export` 헬퍼를 subpr
 - `rust/src/session.rs`: `session.json`, Chrome 프로필 쿠키 import, 온보딩 상태
 - `rust/src/http.rs`: HTTP GET, 리다이렉트, 다운로드, TTL 캐시
 - `rust/src/service.rs`: 페이지네이션, briefing, 자료, PDF, 다운로드, 제출, OZ 헬퍼 호출
-- `rust/src/mcp.rs`: stdio JSON-RPC MCP 서버 27개 도구
+- `rust/src/mcp.rs`: stdio JSON-RPC MCP 서버 28개 도구
 - `src/eclass_mcp/oz_export.py`: OZ PDF 전용 Python/Playwright 헬퍼
 - `src/eclass_mcp/session.py`: 헬퍼가 읽는 세션 형식
 - `skills/cau-eclass/SKILL.md`: 에이전트 스킬 원본
