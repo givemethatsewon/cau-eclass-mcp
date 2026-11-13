@@ -40,6 +40,14 @@ pub enum EclassError {
     InvalidArgument(String),
     #[error("submission failed at {step}: {message}")]
     SubmissionStep { step: &'static str, message: String },
+    #[error("file deletion is disabled; set ECLASS_ENABLE_DELETE=1 to allow it")]
+    DeleteDisabled,
+    #[error("confirmation must be exactly `DELETE {0}`")]
+    DeleteConfirmation(u64),
+    #[error(
+        "this file lives in a submission folder; pass allow_submission_folder=true after checking it is not attached to a submission"
+    )]
+    SubmissionFolder,
     #[error("only same-origin relative e-Class paths are allowed")]
     InvalidPath,
     #[error("cross-origin e-Class redirect rejected")]
@@ -146,6 +154,9 @@ impl EclassError {
             Self::AmbiguousCourse { .. } => "AMBIGUOUS_COURSE",
             Self::InvalidArgument(_) => "INVALID_ARGUMENT",
             Self::SubmissionStep { .. } => "SUBMISSION_STEP",
+            Self::DeleteDisabled => "DELETE_DISABLED",
+            Self::DeleteConfirmation(_) => "DELETE_CONFIRMATION",
+            Self::SubmissionFolder => "SUBMISSION_FOLDER",
             Self::InvalidPath => "INVALID_ARGUMENT",
             Self::CrossOrigin => "CROSS_ORIGIN",
             Self::NotAFile => "NOT_A_FILE",

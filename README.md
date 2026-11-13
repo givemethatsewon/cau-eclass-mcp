@@ -10,7 +10,7 @@ e-Class 로그인은 브라우저에서 한 번만 합니다. 강좌, 공지, �
 
 | 구성 | 역할 |
 |---|---|
-| Rust `eclass-mcp` | MCP stdio 서버, 28개 도구, HTTP 조회·다운로드·PDF 텍스트·과제 제출 |
+| Rust `eclass-mcp` | MCP stdio 서버, 31개 도구, HTTP 조회·다운로드·PDF 텍스트·과제 제출 |
 | Python `eclass-oz-export` (선택) | OZ 뷰어의 PDF 저장을 Playwright로 실행하는 헬퍼 |
 | `session.json` | 두 구성이 공유하는 `.cau.ac.kr` 쿠키 저장소. 소유자 전용 `0600` |
 
@@ -148,7 +148,7 @@ eclass-mcp config --client codex
 
 ## 도구
 
-Rust MCP에는 28개 도구가 있습니다. 조회와 다운로드, 제출 도구 27개에 `get_onboarding_status`를 더했습니다.
+Rust MCP에는 31개 도구가 있습니다. 조회·다운로드·제출 도구 30개에 `get_onboarding_status`를 더했습니다.
 
 | 기능 | 도구 |
 |---|---|
@@ -160,6 +160,7 @@ Rust MCP에는 28개 도구가 있습니다. 조회와 다운로드, 제출 도�
 | 강의 계획서 | `get_syllabus`, `download_syllabus_pdf` |
 | 게시판 | `list_boards`, `list_board_posts`, `get_board_post` |
 | 그룹 | `list_my_groups`, `get_group_activity` |
+| 내 파일 | `list_my_folders`, `list_my_files`, `delete_file` |
 | 다운로드 | `download_attachment`, `get_video_download_info`, `download_video_original` |
 | 제출 | `prepare_submission`, `submit_assignment` |
 

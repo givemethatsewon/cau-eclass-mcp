@@ -1076,6 +1076,40 @@ impl HttpTransport {
         serde_json::from_str(strip_canvas_prefix(&text)).map_err(|_| EclassError::ExpectedJson)
     }
 
+    /// Delete a file owned by the current user.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport error; Canvas soft-deletes and returns the file.
+    pub async fn delete_file(&self, file_id: u32) -> Result<Value, EclassError> {
+        let csrf = self.csrf_token()?;
+        let path = format!("/api/v1/files/{file_id}");
+        let url = self.base.join(&path)?;
+        let mut headers = self.headers(&path, false, false, &url);
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&csrf) {
+            headers.insert("x-csrf-token", value);
+        }
+        let response = self
+            .client
+            .delete(url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|_| EclassError::Network)?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(EclassError::CanvasSessionExpired);
+        }
+        if !response.status().is_success() {
+            return Err(EclassError::Http(response.status().as_u16()));
+        }
+        let bytes = response.bytes().await.map_err(|_| EclassError::Network)?;
+        if bytes.len() > MAX_JSON_BYTES {
+            return Err(EclassError::ResponseTooLarge);
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        serde_json::from_str(strip_canvas_prefix(&text)).map_err(|_| EclassError::ExpectedJson)
+    }
+
     /// Create Canvas upload tickets, upload bytes, and post the submission.
     pub async fn submit_files(
         &self,

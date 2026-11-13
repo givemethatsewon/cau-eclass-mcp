@@ -17,6 +17,7 @@
 - **쿼리 검증 분리**: `local_path`가 경로만 검사하고 쿼리는 보존합니다. `verifier`의 `%2F` 때문에 업로드 마무리가 거부되던 문제를 고쳤습니다.
 - **단계별 제출 오류**: 업로드 실패 시 `request upload slot` / `upload file` / `record submission` 중 어느 단계에서 무엇이 실패했는지 반환합니다.
 - **게시판 내성**: 상세 조회가 실패한 게시글 하나가 게시판 전체 자료 목록을 실패시키지 않습니다.
+- **내 파일 관리**: `list_my_folders`, `list_my_files`로 개인 저장소(제출물 폴더 포함)를 확인하고, `delete_file`로 정리합니다. 삭제는 기본이 미리보기이고 `ECLASS_ENABLE_DELETE=1` + `DELETE <file_id>` 확인 + 제출물 폴더면 추가 플래그가 필요합니다.
 - **LearningX 토큰 자가 복구**: 저장된 Canvas 쿠키로 강좌의 LTI 폼을 다시 POST해 `xn_api_token`을 발급. 브라우저·재로그인 없이 `auth refresh --via http`로 동작하고, 401 응답에서 자동 재시도.
 - **Aside 토큰 브리지**: `auth refresh --via aside`가 사용자가 이미 로그인한 Aside 브라우저에서 토큰만 회수. 전용 Chrome 프로필 로그인을 강요하지 않음.
 - **정직한 상태 진단**: `doctor`가 `canvas_ok`, `learningx_ok`, `learningx_token_age_secs`, `error_code`, `next_action`을 분리해 반환. Canvas 쿠키는 살아 있는데 LearningX만 죽은 상태를 구분.

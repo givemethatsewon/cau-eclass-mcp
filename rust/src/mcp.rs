@@ -291,6 +291,33 @@ async fn call_tool(
                 .await?
         }
         "list_my_groups" => service.groups().await?,
+        "list_my_folders" => service.my_folders().await?,
+        "list_my_files" => {
+            service
+                .my_files(
+                    arg_u32(args, "folder_id"),
+                    args.get("query").and_then(Value::as_str),
+                    arg_usize(args, "offset").unwrap_or(0),
+                    arg_usize(args, "limit").unwrap_or(20),
+                )
+                .await?
+        }
+        "delete_file" => {
+            service
+                .delete_file(
+                    arg_u32(args, "file_id").ok_or_else(|| {
+                        EclassError::InvalidArgument("file_id is required".to_string())
+                    })?,
+                    args.get("confirm")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    args.get("dry_run").and_then(Value::as_bool).unwrap_or(true),
+                    args.get("allow_submission_folder")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )
+                .await?
+        }
         "get_group_activity" => {
             service
                 .group_activity(arg_u32(args, "group_id").ok_or(EclassError::InvalidPath)?)
@@ -692,6 +719,30 @@ fn tools() -> Vec<Tool> {
             annotations: read_only(),
         },
         Tool {
+            name: "list_my_folders",
+            description: "List the user's own file folders and file counts. Submission uploads live under the 제출물 folder.",
+            input_schema: schema(json!({}), &[]),
+            annotations: read_only(),
+        },
+        Tool {
+            name: "list_my_files",
+            description: "List files in the user's own storage, newest first. Use folder_id from list_my_folders to inspect one course's 제출물 folder.",
+            input_schema: schema(
+                json!({"folder_id": {"type": "integer"}, "query": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
+                &[],
+            ),
+            annotations: read_only(),
+        },
+        Tool {
+            name: "delete_file",
+            description: "Preview or permanently delete one file the user owns. dry_run defaults to true; a real delete needs ECLASS_ENABLE_DELETE=1, confirm=\"DELETE <file_id>\", and allow_submission_folder=true for files under 제출물 (deleting those can detach a submitted assignment).",
+            input_schema: schema(
+                json!({"file_id": {"type": "integer"}, "confirm": {"type": "string"}, "dry_run": {"type": "boolean"}, "allow_submission_folder": {"type": "boolean"}}),
+                &["file_id"],
+            ),
+            annotations: json!({"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true}),
+        },
+        Tool {
             name: "get_group_activity",
             description: "Get discussions and files for a verified group.",
             input_schema: schema(json!({"group_id": {"type": "integer"}}), &["group_id"]),
@@ -822,7 +873,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 28);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 31);
     }
 
     #[test]

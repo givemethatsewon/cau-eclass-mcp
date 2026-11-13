@@ -82,6 +82,7 @@ pub struct EClassService {
     output_dir: PathBuf,
     oz_helper: PathBuf,
     enable_submission: bool,
+    enable_delete: bool,
     material_cache: Mutex<HashMap<String, CachedMaterial>>,
     material_lock: Mutex<()>,
     plans: Mutex<HashMap<String, SubmissionPlan>>,
@@ -108,6 +109,7 @@ impl EClassService {
             output_dir,
             oz_helper,
             enable_submission,
+            enable_delete: std::env::var("ECLASS_ENABLE_DELETE").as_deref() == Ok("1"),
             material_cache: Mutex::new(HashMap::new()),
             material_lock: Mutex::new(()),
             plans: Mutex::new(HashMap::new()),
@@ -119,6 +121,13 @@ impl EClassService {
     #[must_use]
     pub fn with_oz_helper(mut self, path: PathBuf) -> Self {
         self.oz_helper = path;
+        self
+    }
+
+    /// Allow or refuse file deletion (used by tests).
+    #[must_use]
+    pub fn with_delete_enabled(mut self, enabled: bool) -> Self {
+        self.enable_delete = enabled;
         self
     }
 
@@ -2164,6 +2173,187 @@ impl EClassService {
         }))
     }
 
+    /// Personal file folders. Submission uploads live under `제출물`.
+    pub async fn my_folders(&self) -> Result<Value, EclassError> {
+        let result = self
+            .paged("/api/v1/users/self/folders?per_page=100", false, 5)
+            .await?;
+        let items = result
+            .items
+            .iter()
+            .map(|folder| {
+                json!({
+                    "folder_id": folder.get("id").and_then(positive_u64)
+                        .map_or(Value::Null, |id| json!(id)),
+                    "name": folder.get("name").cloned().unwrap_or(Value::Null),
+                    "files_count": folder.get("files_count").cloned().unwrap_or(Value::Null),
+                    "parent_folder_id": folder.get("parent_folder_id").and_then(positive_u64)
+                        .map_or(Value::Null, |id| json!(id)),
+                    "created_at": folder.get("created_at").cloned().unwrap_or(Value::Null),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut payload = list_response(items, result.complete, None, None);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "total".to_string(),
+                json!(
+                    object
+                        .get("items")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len)
+                ),
+            );
+        }
+        Ok(payload)
+    }
+
+    /// Files in the user's own storage, newest first.
+    pub async fn my_files(
+        &self,
+        folder_id: Option<u32>,
+        query: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value, EclassError> {
+        if !(1..=100).contains(&limit) {
+            return Err(EclassError::InvalidArgument(
+                "limit must be between 1 and 100".to_string(),
+            ));
+        }
+        let path = folder_id.map_or_else(
+            || "/api/v1/users/self/files?per_page=100".to_string(),
+            |folder_id| format!("/api/v1/folders/{folder_id}/files?per_page=100"),
+        );
+        let result = self.paged(&path, false, 10).await?;
+        let search = normalized(query);
+        let mut items = result
+            .items
+            .iter()
+            .filter(|file| {
+                search.is_empty()
+                    || normalized(file.get("display_name").and_then(Value::as_str))
+                        .contains(&search)
+            })
+            .map(compact_file)
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .get("created_at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .cmp(
+                    left.get("created_at")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+        });
+        let total = items.len();
+        let next = (offset + limit < total).then(|| json!(offset + limit));
+        let page = items
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "items": page,
+            "total": total,
+            "folder_id": folder_id,
+            "complete": result.complete && next.is_none(),
+            "has_more": next.is_some(),
+            "next": next,
+            "next_param": next.is_some().then_some("offset")
+        }))
+    }
+
+    /// True when the folder or one of its ancestors is the `제출물` folder.
+    async fn folder_is_submission(&self, folder_id: u32) -> Result<bool, EclassError> {
+        let mut current = Some(folder_id);
+        for _ in 0..5 {
+            let Some(id) = current else {
+                return Ok(false);
+            };
+            let folder = self
+                .get(&format!("/api/v1/folders/{id}"), false, false)
+                .await?;
+            if folder.get("name").and_then(Value::as_str) == Some("제출물") {
+                return Ok(true);
+            }
+            current = folder
+                .get("parent_folder_id")
+                .and_then(positive_u64)
+                .and_then(|value| u32::try_from(value).ok());
+        }
+        Ok(false)
+    }
+
+    /// Preview or delete one file owned by the current user.
+    ///
+    /// `dry_run` is always allowed and never touches the server. A real delete
+    /// needs `ECLASS_ENABLE_DELETE=1`, the exact confirmation string, and an
+    /// extra opt-in when the file sits in a submission folder.
+    pub async fn delete_file(
+        &self,
+        file_id: u32,
+        confirmation: &str,
+        dry_run: bool,
+        allow_submission_folder: bool,
+    ) -> Result<Value, EclassError> {
+        let file = self
+            .get(&format!("/api/v1/files/{file_id}"), false, false)
+            .await?;
+        let folder_id = file
+            .get("folder_id")
+            .and_then(positive_u64)
+            .and_then(|value| u32::try_from(value).ok());
+        let submission_folder = match folder_id {
+            Some(folder_id) => self.folder_is_submission(folder_id).await?,
+            None => false,
+        };
+        let preview = json!({
+            "file_id": file_id,
+            "name": file.get("display_name").or_else(|| file.get("filename")).cloned().unwrap_or(Value::Null),
+            "bytes": file.get("size").cloned().unwrap_or(Value::Null),
+            "folder_id": folder_id,
+            "created_at": file.get("created_at").cloned().unwrap_or(Value::Null),
+            "submission_folder": submission_folder
+        });
+        if dry_run {
+            return Ok(json!({
+                "dry_run": true,
+                "deleted": false,
+                "file": preview,
+                "next": {
+                    "confirm": format!("DELETE {file_id}"),
+                    "dry_run": false,
+                    "allow_submission_folder": submission_folder
+                },
+                "warnings": if submission_folder {
+                    vec!["this file is in a submission folder; deleting it can remove it from a submitted assignment"]
+                } else {
+                    Vec::<&str>::new()
+                }
+            }));
+        }
+        if !self.enable_delete {
+            return Err(EclassError::DeleteDisabled);
+        }
+        if confirmation != format!("DELETE {file_id}") {
+            return Err(EclassError::DeleteConfirmation(u64::from(file_id)));
+        }
+        if submission_folder && !allow_submission_folder {
+            return Err(EclassError::SubmissionFolder);
+        }
+        let deleted = self.transport.delete_file(file_id).await?;
+        self.invalidate().await;
+        Ok(json!({
+            "dry_run": false,
+            "deleted": true,
+            "file": preview,
+            "workflow_state": deleted.get("workflow_state").cloned().unwrap_or(Value::Null)
+        }))
+    }
+
     fn fingerprint(path: &str) -> Result<FileFingerprint, EclassError> {
         let path = expand_home(path);
         if !path.is_file() || std::fs::metadata(&path)?.len() > 10 * 1024 * 1024 {
@@ -2642,6 +2832,20 @@ fn compact_course(course: &Value) -> Value {
         "workflow_state": course.get("workflow_state").cloned().unwrap_or(Value::Null),
         "enrollment_state": enrollment_state.cloned().unwrap_or(Value::Null)
     })
+}
+
+fn compact_file(file: &Value) -> Value {
+    let mut item = json!({
+        "file_id": file.get("id").and_then(positive_u64).map_or(Value::Null, |id| json!(id)),
+        "name": file.get("display_name").or_else(|| file.get("filename")).cloned().unwrap_or(Value::Null),
+        "bytes": file.get("size").cloned().unwrap_or(Value::Null),
+        "content_type": file.get("content-type").or_else(|| file.get("content_type")).cloned().unwrap_or(Value::Null),
+        "folder_id": file.get("folder_id").and_then(positive_u64).map_or(Value::Null, |id| json!(id)),
+        "created_at": file.get("created_at").cloned().unwrap_or(Value::Null),
+        "hidden": file.get("hidden").cloned().unwrap_or(Value::Null)
+    });
+    add_seoul_timestamps(&mut item);
+    item
 }
 
 fn compact_board(board: &Value) -> Value {
