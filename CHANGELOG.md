@@ -12,7 +12,10 @@
 - **PDF 커서**: `max_pages`(1–20)를 실제로 적용하고, `next_offset`을 `has_more=true`일 때만 `next_page`와 쌍으로 반환합니다.
 - **다운로드 정리**: `eclass-mcp downloads [--keep N] [--dry-run]`으로 내려받은 파일 수·용량을 확인하고 오래된 파일을 정리합니다.
 - **과제 상세 시각**: `get_assignment`가 원본 필드에 `due_at_seoul`, `lock_at_seoul` 등을 더하고, `get_submission`이 `submitted_at_seoul`을 반환합니다. 목록과 상세의 시간대 표현이 같아졌습니다.
-- **제출 경로 검증**: `prepare_submission` → `submit_assignment` 전 구간을 mock Canvas로 검증하는 테스트 추가(업로드 티켓 → multipart 업로드 → 제출 POST → 재조회 검증, 중복 제출·확인 문자열 불일치·파일 변조·제출 비활성 거부 포함).
+- **제출 경로 검증**: `prepare_submission` → `submit_assignment` 전 구간을 mock Canvas 테스트로 고정하고, 실제 계정의 열린 과제에서 업로드·제출·재조회까지 확인했습니다.
+- **업로드 마무리**: Canvas 로컬 스토리지가 업로드 후 `303 → /api/v1/files/{id}/create_success`로 보내는 흐름을 처리합니다. 같은 오리진의 해당 경로일 때만 인증된 GET으로 따라가고, 그 밖의 리다이렉트는 계속 거부합니다.
+- **쿼리 검증 분리**: `local_path`가 경로만 검사하고 쿼리는 보존합니다. `verifier`의 `%2F` 때문에 업로드 마무리가 거부되던 문제를 고쳤습니다.
+- **단계별 제출 오류**: 업로드 실패 시 `request upload slot` / `upload file` / `record submission` 중 어느 단계에서 무엇이 실패했는지 반환합니다.
 - **게시판 내성**: 상세 조회가 실패한 게시글 하나가 게시판 전체 자료 목록을 실패시키지 않습니다.
 - **LearningX 토큰 자가 복구**: 저장된 Canvas 쿠키로 강좌의 LTI 폼을 다시 POST해 `xn_api_token`을 발급. 브라우저·재로그인 없이 `auth refresh --via http`로 동작하고, 401 응답에서 자동 재시도.
 - **Aside 토큰 브리지**: `auth refresh --via aside`가 사용자가 이미 로그인한 Aside 브라우저에서 토큰만 회수. 전용 Chrome 프로필 로그인을 강요하지 않음.

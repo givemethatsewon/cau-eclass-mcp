@@ -1036,9 +1036,38 @@ impl HttpTransport {
             .await
             .map_err(|_| EclassError::Network)?;
         if response.status().is_redirection() {
-            return Err(EclassError::BrowserOnly(
-                "upload finalization requires an unsupported redirect",
-            ));
+            // Canvas finalizes a direct upload by redirecting to
+            // `/api/v1/files/<id>/create_success`. Follow that exact same-origin
+            // shape with the authenticated client; anything else stays rejected.
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok());
+            if let Some(location) = location {
+                let target = Url::parse(location).or_else(|_| self.base.join(location))?;
+                let same_origin = target.scheme() == self.base.scheme()
+                    && target.host_str() == self.base.host_str()
+                    && target.port_or_known_default() == self.base.port_or_known_default();
+                if same_origin {
+                    if create_success_id(target.path()).is_some() {
+                        // Keep the redirect's query: Canvas puts a verifier there.
+                        let mut path = target.path().to_string();
+                        if let Some(query) = target.query() {
+                            path.push('?');
+                            path.push_str(query);
+                        }
+                        let finalized = self.get(&path, false, false).await?;
+                        return Ok(finalized.body);
+                    }
+                    if let Some(id) = file_id_from_path(target.path()) {
+                        return Ok(json!({"id": id}));
+                    }
+                }
+            }
+            return Err(EclassError::SubmissionStep {
+                step: "upload file",
+                message: "upload redirect target is not a Canvas file finalization URL".to_string(),
+            });
         }
         if !response.status().is_success() {
             return Err(EclassError::Http(response.status().as_u16()));
@@ -1063,7 +1092,11 @@ impl HttpTransport {
                     ),
                     &json!({"name": name, "size": bytes.len(), "content_type": content_type}),
                 )
-                .await?;
+                .await
+                .map_err(|error| EclassError::SubmissionStep {
+                    step: "request upload slot",
+                    message: error.to_string(),
+                })?;
             let upload_url = ticket
                 .get("upload_url")
                 .and_then(Value::as_str)
@@ -1075,7 +1108,11 @@ impl HttpTransport {
                 .unwrap_or_default();
             let uploaded = self
                 .upload_multipart(upload_url, &params, name, bytes, content_type)
-                .await?;
+                .await
+                .map_err(|error| EclassError::SubmissionStep {
+                    step: "upload file",
+                    message: error.to_string(),
+                })?;
             let id = uploaded
                 .get("id")
                 .and_then(|value| {
@@ -1091,7 +1128,11 @@ impl HttpTransport {
                 &format!("/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions"),
                 &json!({"submission": {"submission_type": "online_upload", "file_ids": file_ids}}),
             )
-            .await?;
+            .await
+            .map_err(|error| EclassError::SubmissionStep {
+                step: "record submission",
+                message: error.to_string(),
+            })?;
         Ok(
             json!({"file_ids": file_ids, "submission_id": submission.get("id").cloned().unwrap_or(Value::Null)}),
         )
@@ -1195,21 +1236,38 @@ fn find_item(value: &Value, item_id: u32) -> Option<&Value> {
     None
 }
 
+/// Extract the file id from Canvas' upload-finalization path.
+fn create_success_id(path: &str) -> Option<u64> {
+    let path = path.trim_end_matches('/');
+    let rest = path
+        .strip_prefix("/api/v1/files/")?
+        .strip_suffix("/create_success")?;
+    rest.parse().ok()
+}
+
+/// Extract a file id from `/files/<id>` or `/api/v1/files/<id>` paths.
+fn file_id_from_path(path: &str) -> Option<u64> {
+    let rest = path
+        .strip_prefix("/api/v1/files/")
+        .or_else(|| path.strip_prefix("/files/"))?;
+    let id = rest.split(['/', '?']).next()?;
+    id.parse().ok()
+}
+
 /// Validate a same-origin relative path.
+///
+/// Only the path is security-relevant; a query string cannot change the target
+/// path, and Canvas verifier tokens legitimately contain percent-encoded slashes.
 pub fn local_path(value: &str) -> Result<String, EclassError> {
-    let lower = value.to_ascii_lowercase();
-    if !value.starts_with('/')
-        || value.starts_with("//")
-        || value.contains('\\')
+    let path = value.split('?').next().unwrap_or(value);
+    let lower = path.to_ascii_lowercase();
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains('\\')
         || lower.contains("%2e")
         || lower.contains("%2f")
         || lower.contains("%5c")
-        || value
-            .split('?')
-            .next()
-            .unwrap_or(value)
-            .split('/')
-            .any(|segment| segment == "..")
+        || path.split('/').any(|segment| segment == "..")
     {
         return Err(EclassError::InvalidPath);
     }
@@ -1223,6 +1281,32 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
     };
+
+    #[test]
+    fn allows_encoded_verifiers_in_queries_but_not_in_paths() {
+        assert!(local_path("/api/v1/files/1/create_success?verifier=a%2Fb%2Bc").is_ok());
+        assert!(local_path("/api/v1/files/%2e%2e/settings").is_err());
+        assert!(local_path("/api/v1/../settings").is_err());
+        assert!(local_path("//evil.example/x").is_err());
+        assert!(local_path("https://evil.example/x").is_err());
+    }
+
+    #[test]
+    fn parses_canvas_upload_finalization_paths() {
+        assert_eq!(
+            create_success_id("/api/v1/files/11010966/create_success"),
+            Some(11010966)
+        );
+        assert_eq!(
+            create_success_id("/api/v1/files/11010966/create_success/"),
+            Some(11010966)
+        );
+        assert_eq!(create_success_id("/api/v1/files/abc/create_success"), None);
+        assert_eq!(create_success_id("/login"), None);
+        assert_eq!(file_id_from_path("/files/42"), Some(42));
+        assert_eq!(file_id_from_path("/api/v1/files/42/download"), Some(42));
+        assert_eq!(file_id_from_path("/courses/1/files"), None);
+    }
 
     fn session() -> Session {
         Session::from_cdp(

@@ -2395,13 +2395,14 @@ impl EClassService {
             .await;
         let result = match result {
             Ok(result) => result,
-            Err(_) => {
+            Err(error) => {
                 if let Some(stored) = self.plans.lock().await.get_mut(plan_id) {
                     stored.state = "uncertain".to_string();
                 }
-                return Err(EclassError::BrowserOnly(
-                    "upload/submission outcome uncertain; inspect get_submission; do not retry this plan",
-                ));
+                return Err(EclassError::SubmissionStep {
+                    step: "submit files",
+                    message: format!("{error}; inspect get_submission; do not retry this plan"),
+                });
             }
         };
         self.invalidate().await;

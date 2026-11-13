@@ -100,6 +100,7 @@ async fn mount_assignment(server: &MockServer, submitted: Arc<AtomicBool>) {
 
 async fn mount_upload(server: &MockServer, submitted: Arc<AtomicBool>) {
     let upload_url = format!("{}/upload", server.uri());
+    let server_uri = server.uri();
     Mock::given(method("POST"))
         .and(path(
             "/api/v1/courses/1/assignments/10/submissions/self/files",
@@ -112,7 +113,21 @@ async fn mount_upload(server: &MockServer, submitted: Arc<AtomicBool>) {
         .await;
     Mock::given(method("POST"))
         .and(path("/upload"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 77})))
+        .respond_with(move |_request: &Request| {
+            ResponseTemplate::new(303).insert_header(
+                "location",
+                format!("{}/api/v1/files/77/create_success", server_uri),
+            )
+        })
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/files/77/create_success"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 77,
+            "display_name": "answer.txt",
+            "size": 10
+        })))
         .mount(server)
         .await;
     Mock::given(method("POST"))

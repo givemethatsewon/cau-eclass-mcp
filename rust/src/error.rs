@@ -38,6 +38,8 @@ pub enum EclassError {
     },
     #[error("{0}")]
     InvalidArgument(String),
+    #[error("submission failed at {step}: {message}")]
+    SubmissionStep { step: &'static str, message: String },
     #[error("only same-origin relative e-Class paths are allowed")]
     InvalidPath,
     #[error("cross-origin e-Class redirect rejected")]
@@ -143,6 +145,7 @@ impl EclassError {
             Self::CourseNotFound => "COURSE_NOT_FOUND",
             Self::AmbiguousCourse { .. } => "AMBIGUOUS_COURSE",
             Self::InvalidArgument(_) => "INVALID_ARGUMENT",
+            Self::SubmissionStep { .. } => "SUBMISSION_STEP",
             Self::InvalidPath => "INVALID_ARGUMENT",
             Self::CrossOrigin => "CROSS_ORIGIN",
             Self::NotAFile => "NOT_A_FILE",
