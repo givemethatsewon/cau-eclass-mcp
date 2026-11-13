@@ -1536,14 +1536,23 @@ impl EClassService {
         course_id: u32,
         assignment_id: u32,
     ) -> Result<Value, EclassError> {
-        self.get(
-            &format!(
-                "/api/v1/courses/{course_id}/assignments/{assignment_id}?include[]=submission"
-            ),
-            false,
-            false,
-        )
-        .await
+        let mut value = self
+            .get(
+                &format!(
+                    "/api/v1/courses/{course_id}/assignments/{assignment_id}?include[]=submission"
+                ),
+                false,
+                false,
+            )
+            .await?;
+        // Detail responses keep the raw shape but must not lose the KST view
+        // that compact list responses already provide.
+        if let Some(object) = value.as_object_mut() {
+            for (key, value) in date_fields(&Value::Object(object.clone())) {
+                object.insert(key, value);
+            }
+        }
+        Ok(value)
     }
 
     /// Current-user submission.
@@ -1552,12 +1561,28 @@ impl EClassService {
         course_id: u32,
         assignment_id: u32,
     ) -> Result<Value, EclassError> {
-        self.get(
-            &format!("/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions/self"),
-            false,
-            false,
-        )
-        .await
+        let mut value = self
+            .get(
+                &format!(
+                    "/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions/self"
+                ),
+                false,
+                false,
+            )
+            .await?;
+        if let Some(object) = value.as_object_mut()
+            && let Some(raw) = object.get("submitted_at").and_then(Value::as_str)
+            && let Ok(date) = DateTime::parse_from_rfc3339(raw)
+        {
+            object.insert(
+                "submitted_at_seoul".to_string(),
+                json!(
+                    date.with_timezone(&Seoul)
+                        .to_rfc3339_opts(SecondsFormat::AutoSi, false)
+                ),
+            );
+        }
+        Ok(value)
     }
 
     /// Assignment and LearningX deadlines.
