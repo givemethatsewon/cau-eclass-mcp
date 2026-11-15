@@ -2,16 +2,19 @@
 
 use std::path::PathBuf;
 
-use crate::error::EclassError;
+use crate::{error::EclassError, session::expand_home};
 
 pub(crate) fn find_browser(explicit: Option<PathBuf>) -> Result<PathBuf, EclassError> {
     if let Some(path) = explicit {
+        let path = expand_home(&path);
         return path
             .is_file()
             .then_some(path)
             .ok_or(EclassError::BrowserNotFound);
     }
-    if let Some(path) = std::env::var_os("ECLASS_BROWSER_PATH").map(PathBuf::from)
+    if let Some(path) = std::env::var_os("ECLASS_BROWSER_PATH")
+        .map(PathBuf::from)
+        .map(|path| expand_home(&path))
         && path.is_file()
     {
         return Ok(path);
