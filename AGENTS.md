@@ -1,11 +1,7 @@
 # Agent setup and safety
 
-This repository has two implementations of the CAU e-Class MCP:
-
-- `src/eclass_mcp/`: Python 0.4.0 reference implementation.
-- `rust/`: experimental Rust read/download core and prebuilt-binary path.
-
-For the Rust path, read `rust/ONBOARDING.md` before guiding a user.
+CAU e-Class MCP ships one Rust executable from `rust/`. Read
+`rust/ONBOARDING.md` before guiding a user.
 
 ## First run
 
@@ -32,16 +28,6 @@ For the Rust path, read `rust/ONBOARDING.md` before guiding a user.
 
 ## Development
 
-Python:
-
-```sh
-uv sync --frozen --extra browser
-uv run pytest -q
-uv run ruff check src tests scripts
-```
-
-Rust:
-
 ```sh
 cd rust
 cargo fmt --check
@@ -49,3 +35,5 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo build --release
 ```
+
+For the Chromium OZ export test, see [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -6,7 +6,7 @@ description: Use the CAU e-Class MCP to find a user's courses, notices, assignme
 
 # CAU e-Class
 
-Use the connected eclass MCP tools. The user signs in through `eclass-mcp login` (Chrome profile cookie import); never ask them to paste a password or cookie into chat. If startup fails, use the installed `eclass-mcp doctor` command. Browser login is separate from installing this skill. The Rust MCP handles reads, downloads and submissions; only `download_syllabus_pdf` invokes the optional `eclass-oz-export` Playwright helper.
+Use the connected eclass MCP tools. The user signs in through `eclass-mcp login` (Chrome profile cookie import); never ask them to paste a password or cookie into chat. If startup fails, use the installed `eclass-mcp doctor` command. Browser login is separate from installing this skill. The Rust MCP handles reads, downloads and submissions; `download_syllabus_pdf` opens an installed Chromium browser in a temporary profile to save the native OZ PDF.
 
 Start with `get_session_status` and `list_courses(query=..., term=...)`. `list_courses` defaults to the current academic term; pass `all_terms=true` for older terms. Resolve the requested course by name and term; when a name matches more than one course the tool returns `AMBIGUOUS_COURSE` with `details.candidates[].course_id` — pick from those IDs and never assume the first result. Obtain resource IDs from lists/details, never from examples or another user's account. For a quick daily or weekly overview, use `get_briefing(days=..., course_limit=...)` or `list_todo`; report `complete=false` and `warnings` instead of implying a full scan. `get_briefing.deadlines` is forward-looking, `overdue` is the past-due tail, and `windows` states both ranges in Asia/Seoul.
 

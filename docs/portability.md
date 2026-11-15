@@ -1,9 +1,6 @@
 # Rust 전환 검토와 실험 결과
 
-2026-11-12. 0.4.0의 HTTP 우선 구조를 `rust/`에 실제로 이식해 측정했다.
-결론부터 말하면 **읽기·다운로드·제출 코어는 Rust로 전환 완료**했고,
-Python은 OZ PDF 내보내기만 담당하는 작은 헬퍼로 축소했다. 남은 브라우저
-경계는 OZ PDF 하나다.
+2026-11-12에 HTTP 우선 구조를 Rust로 이식해 아래 수치를 측정했다. 이후 `rust-v0.2.0`에서 OZ PDF 저장까지 Rust 실행파일에 통합했다.
 
 ## 실험 결과
 
@@ -37,30 +34,6 @@ Python은 OZ PDF 내보내기만 담당하는 작은 헬퍼로 축소했다. 남
 - MCP stdio JSON-RPC 28개 도구
 - `login`, `onboard`, `logout`, `doctor`, `config`, `serve`
 
-## Python이 필수인 부분이 있나
-
-**런타임 코어에는 없다.** 다음은 모두 Rust로 대체됐다.
-
-| 기존 Python | Rust 대체 |
-|---|---|
-| `pypdf` 페이지 텍스트 | `lopdf` (일반 텍스트 PDF 검증·테스트 완료) |
-| FastMCP 서버 | 제거됨. Rust stdio JSON-RPC 서버 |
-| `httpx` 전송 | `reqwest` |
-| `asyncio` 병렬 briefing | `tokio` + `buffer_unordered(4)` |
-| 세션 수집 | `rookie-cookies` Chrome 프로필 쿠키 |
-| 카탈로그·필터 | 순수 Rust 모듈 + 단위 테스트 |
-
-남은 것은 **Python 언어에 묶인 것이 아니라 브라우저 UI에 묶여 있다.**
-
-1. **OZ 계획서 PDF 내보내기**: OZ 뷰어가 `/oz80/server`에서 보고서 데이터를
-   받아 브라우저 안에서 PDF를 생성한다. 서버에 바로 받을 PDF URL이 없어
-   Rust에서는 브라우저 자동화가 필요하다.
-2. **과제 준비·제출**: Canvas 업로드 티켓, CSRF, multipart 업로드, 제출 POST,
-   readback 검증을 Rust HTTP로 구현했다. 합성 테스트는 통과했고 실계정 검증만
-   남았다.
-
-즉, OZ PDF만 Python/Playwright 헬퍼로 남기고 나머지는 Rust로 통일했다.
-
 ## OZ PDF 분석 결과
 
 실제 강좌의 수업계획서를 Aside로 열어 읽기 전용으로 관찰했다.
@@ -74,53 +47,9 @@ Python은 OZ PDF 내보내기만 담당하는 작은 헬퍼로 축소했다. 남
   브라우저 안에서 보고서 데이터를 렌더링해 만든다. `/oz80/server` 응답에는
   PDF URL이 없다.
 
-따라서 OZ PDF를 순수 Rust HTTP만으로 얻는 방법은 사실상 없다. 선택지는:
+Rust는 설치된 Chromium 계열 브라우저를 임시 프로필로 띄우고 CDP를 통해 OZ 프레임의 Save → Adobe PDF를 실행한다. 브라우저가 생성한 원본을 받아 크기와 형식을 검증한 후 저장한다. 이 흐름에서 PDF 본문 추출은 `lopdf`가 맡는다.
 
-1. Rust에서 headless Chrome을 제어해 OZ 뷰어를 실행하고 PDF를 받는다
-   (`chromiumoxide`, `headless_chrome` 등). CDP를 내부적으로 쓰지만 사용자가
-   remote debugging 포트를 관리할 필요는 없다.
-2. macOS/Windows WebView(`wry`)에 OZ 뷰어를 띄우고 PDF로 저장한다.
-   플랫폼별 동작 차이가 크고 구현 비용이 높다.
-3. OZJSViewer를 JS 런타임과 DOM/Canvas로 재현한다. 6.4MB 규모의
-   비공개 뷰어 엔진을 유지해야 하므로 권장하지 않는다.
-4. OZ PDF만 Python/Playwright 헬퍼로 남긴다. MCP 서버는 Rust 하나로 유지하고,
-   필요할 때만 헬퍼를 호출한다.
-
-현재는 **4번**을 채택했다. MCP 서버는 Rust 하나로 유지하고, OZ PDF를 요청할
-때만 `eclass-oz-export` Python/Playwright 헬퍼를 subprocess로 실행한다. OZ PDF는
-“브라우저 경계”로 남지만, 상시 Python 런타임이나 FastMCP 서버는 없다. 반면
-과제 제출은 Canvas HTTP 업로드로 Rust에 이식했으므로 브라우저가 필요 없다.
-
-## 배포: Rust가 더 단순해질 수 있다
-
-26개 HTTP 도구를 쓰는 사용자는 Rust, Python, uv, 가상환경을 설치할 필요가
-없다. GitHub Releases의 사전 빌드 바이너리와 설치 스크립트만 사용한다.
-OZ PDF를 쓸 때만 선택적으로 Python 헬퍼를 설치한다.
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | sh
-eclass-mcp onboard --client claude
-```
-
-릴리스 매트릭스:
-
-- macOS Apple Silicon / Intel
-- Linux x86_64 / arm64
-- Windows x64
-
-각 아카이브에 SHA-256을 붙인다. **베타 단계에서는 서명·notarization을
-필수로 두지 않는다.** macOS Gatekeeper 경고와 Windows SmartScreen 가능성을
-릴리스 노트에 솔직히 적고, 버전 고정(`ECLASS_VERSION=rust-v0.1.0`)과 체크섬
-검증을 기본으로 한다. Python 설치는 OZ PDF를 쓸 때만 선택하는 `oz` extra로
-남긴다.
-사용자가 늘면 macOS Developer ID 서명·notarization을 먼저 추가하고, 그다음
-Windows Authenticode를 검토한다. Homebrew tap은 선택 사항이다.
-
-업데이트는 beta에서 자동 업데이터를 두지 않고, 새 `ECLASS_VERSION`으로 설치
-스크립트를 다시 실행하는 방식이다. 세션 파일과 다운로드는 설치 디렉터리
-밖이라 보존된다. `.github/workflows/rust-release.yml`과 `rust/install.sh`,
-`rust/install.ps1`에 스켈레톤을 추가했다. Cargo/Go/Rust 툴체인을 사용자에게
-요구하지 않는 경로다.
+배포 대상과 업데이트 방식은 [릴리스 문서](../rust/RELEASING.md)에 정리했다.
 
 ## Agent 온보딩 설계
 
@@ -176,21 +105,3 @@ Go도 여전히 가능하지만, Rust 구현이 이미 동작하고 측정까지
 이 프로젝트의 병목은 학교 API이므로 두 언어의 성능 차이는 사용자 체감에
 거의 영향이 없다. **중요한 결정은 언어가 아니라 배포·서명·온보딩·브라우저
 경계다.**
-
-## 권장 순서
-
-1. Rust 읽기/다운로드 코어를 실제 계정으로 검증한다.
-2. `onboard` JSON 스키마를 `schema_version=1`로 고정하고 Rust에서 완성한다.
-   LearningX 탭 자동화 가능 여부를 실제 브라우저에서 확인한다. Python
-   쪽에는 새 기능을 얹지 않고, 마이그레이션 기간이 길어질 때만 얇게 추가한다.
-3. GitHub Releases + SHA-256 + 설치 스크립트로 **베타 배포**한다. 서명은
-   미루고, Python은 OZ PDF를 쓸 때만 선택하는 `oz` extra로 남긴다. 스킬/`AGENTS.md`로
-   에이전트 온보딩 흐름을 검증한다.
-4. 실제 사용자 피드백을 본 뒤 macOS 서명·notarization, 그다음 Windows
-   서명 투자 여부를 결정한다.
-5. OZ PDF를 Rust 브라우저 자동화로 포팅하거나 작은 헬퍼로 남긴다. 제출은
-   실계정 검증 후 기본 활성화 여부를 결정한다.
-6. Python 패키지는 OZ PDF 헬퍼와 세션 로더만 남긴다.
-
-두 개의 완전한 구현을 장기간 유지하지 않는다. Rust를 primary로 두고,
-Python은 OZ PDF 헬퍼 하나만 담당한다.

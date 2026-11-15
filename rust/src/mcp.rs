@@ -1,4 +1,4 @@
-//! Minimal MCP stdio server with 28 tools; the Python OZ helper is separate.
+//! Minimal MCP stdio server for CAU e-Class.
 
 use std::io::Write;
 
@@ -678,7 +678,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "download_syllabus_pdf",
-            description: "OZ native PDF export; requires the optional eclass-oz-export helper with Playwright.",
+            description: "Export the native OZ syllabus PDF using the installed Chromium browser.",
             input_schema: schema(
                 json!({"course_id": {"type": "integer"}, "extract_text": {"type": "boolean"}}),
                 &["course_id"],

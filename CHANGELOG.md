@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.6.0 — unreleased
+## rust-v0.2.0 — 2026-11-15
+
+- **OZ 강의계획서 PDF**: Rust 실행파일이 설치된 Chromium 계열 브라우저의 OZ Save → Adobe PDF를 실행하고, PDF 검증과 본문 추출도 처리합니다.
+- Python OZ 헬퍼와 PyPI 배포 워크플로를 제거했습니다.
+- 새 macOS 배포본은 Apple Silicon을 대상으로 빌드합니다.
+
+## 0.6.0 — 이전 개발 기록
 
 - **입력 검증**: MCP 서버가 `inputSchema`를 직접 강제합니다. 오타 난 인자(`max_pages` 오타 등)와 누락된 필수 인자, 잘못된 타입은 `INVALID_ARGUMENT`로 거부하고 허용 인자 목록을 함께 알려 줍니다. 그동안 클라이언트가 조용히 버리던 값 때문에 필터가 무시되던 문제를 없앴습니다.
 - **과목명 모호성**: `course=` 이름이 여러 과목과 일치하면 첫 결과를 고르지 않고 `AMBIGUOUS_COURSE`와 `details.candidates[].course_id`를 반환합니다. 현재 학기를 먼저 찾고, 그다음 전체 학기를 봅니다.

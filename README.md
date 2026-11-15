@@ -2,7 +2,7 @@
 
 중앙대학교 e-Class를 MCP 클라이언트에서 다루는 Rust 서버입니다.
 
-e-Class 로그인은 브라우저에서 한 번만 합니다. 강좌, 공지, 과제, 자료 조회와 다운로드, 과제 제출은 HTTP로 처리합니다. 서버는 Rust 단일 바이너리입니다. Python은 강의 계획서 PDF를 내려받을 때만 쓰는 작은 헬퍼입니다.
+e-Class 로그인은 브라우저에서 한 번만 합니다. 강좌, 공지, 과제, 자료 조회와 다운로드, 과제 제출은 HTTP로 처리합니다. OZ 강의계획서 PDF 저장을 포함한 모든 MCP 도구를 Rust 실행파일 하나로 제공합니다.
 
 ![e-Class MCP 데모](docs/assets/eclass-demo.gif)
 
@@ -10,11 +10,8 @@ e-Class 로그인은 브라우저에서 한 번만 합니다. 강좌, 공지, �
 
 | 구성 | 역할 |
 |---|---|
-| Rust `eclass-mcp` | MCP stdio 서버, 31개 도구, HTTP 조회·다운로드·PDF 텍스트·과제 제출 |
-| Python `eclass-oz-export` (선택) | OZ 뷰어의 PDF 저장을 Playwright로 실행하는 헬퍼 |
-| `session.json` | 두 구성이 공유하는 `.cau.ac.kr` 쿠키 저장소. 소유자 전용 `0600` |
-
-강의 계획서 PDF는 서버가 PDF URL을 받아 오는 방식이 아닙니다. OZ 뷰어가 브라우저 안에서 PDF를 만들기 때문에, 이 기능만 헬퍼를 따로 둡니다. 과제 제출은 Canvas HTTP 업로드로 Rust에 옮겼습니다. PDF가 필요할 때만 Rust MCP가 헬퍼를 호출합니다.
+| Rust `eclass-mcp` | MCP stdio 서버, 31개 도구, HTTP 조회·다운로드·OZ PDF 저장·PDF 텍스트·과제 제출 |
+| `session.json` | `.cau.ac.kr` 쿠키 저장소. Unix에서 소유자 전용 `0600` |
 
 ## Rust MCP 설치
 
@@ -22,7 +19,7 @@ e-Class 로그인은 브라우저에서 한 번만 합니다. 강좌, 공지, �
 
 ### macOS / Linux
 
-macOS는 Apple Silicon과 Intel, Linux는 glibc 2.35 이상이 설치된 x86_64와 ARM64를 지원합니다.
+macOS는 Apple Silicon, Linux는 glibc 2.35 이상이 설치된 x86_64와 ARM64를 지원합니다.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | bash
@@ -54,7 +51,7 @@ eclass-mcp onboard --client claude
 eclass-mcp login
 ```
 
-전용 Chrome/Edge/Chromium 프로필(`~/.cau-eclass/chrome-profile`)이 열립니다. e-Class에 직접 로그인하면 쿠키 DB에서 세션을 읽어 저장합니다. remote debugging 포트나 CDP 연결은 쓰지 않습니다.
+전용 Chrome/Edge/Chromium 프로필(`~/.cau-eclass/chrome-profile`)이 열립니다. e-Class에 직접 로그인하면 쿠키 DB에서 세션을 읽어 저장합니다.
 
 ```sh
 eclass-mcp doctor
@@ -106,46 +103,11 @@ eclass-mcp auth refresh --via auto
 
 파일은 소유자만 읽도록 `0600`, 디렉터리는 `0700`으로 저장합니다. `ECLASS_SESSION_FILE`로 위치를 바꿀 수 있습니다.
 
-## 강의 계획서 PDF 다운로드 (선택)
+## OZ 강의계획서 PDF 저장
 
-강의 계획서 PDF가 필요 없으면 Python도 설치하지 않아도 됩니다. 쓰려면 Playwright가 포함된 헬퍼를 설치합니다.
+`download_syllabus_pdf(course_id=…, extract_text=true)`로 OZ 뷰어의 원본 PDF를 저장합니다. 이미 설치된 Chrome·Edge·Brave·Chromium 중 하나를 임시 프로필로 실행해 Save → Adobe PDF를 선택합니다. 저장된 e-Class 세션을 사용하며 PDF 저장이 끝나면 임시 브라우저를 종료합니다.
 
-```sh
-# 배포 후
-uv tool install --python 3.12 'cau-eclass-mcp[oz]==0.5.0'
-
-# 아직 PyPI 배포 전이면 로컬 wheel
-uv tool install --python 3.12 --from ./dist/cau_eclass_mcp-0.5.0-py3-none-any.whl 'cau-eclass-mcp[oz]'
-
-# 저장소 checkout에서 직접 쓸 때
-uv sync --extra oz
-
-export ECLASS_OZ_HELPER="$(command -v eclass-oz-export)"
-```
-
-헬퍼는 시스템 Chrome/Edge/Chromium을 먼저 찾습니다. 없으면 Playwright Chromium을 씁니다. 브라우저가 아직 없을 때는 한 번 설치하세요.
-
-```sh
-uv run playwright install chromium
-```
-
-Rust MCP 설정의 `env`에 `ECLASS_OZ_HELPER` 절대 경로를 넣으면 클라이언트가 다른 `PATH`로 서버를 띄워도 됩니다.
-
-```json
-{
-  "mcpServers": {
-    "eclass": {
-      "command": "/absolute/path/to/eclass-mcp",
-      "args": ["serve"],
-      "env": {
-        "ECLASS_SESSION_FILE": "/absolute/path/session.json",
-        "ECLASS_OZ_HELPER": "/absolute/path/eclass-oz-export",
-        "ECLASS_ENABLE_SUBMISSION": "0"
-      }
-    }
-  }
-}
-```
+`extract_text=false`로 PDF만 저장할 수 있습니다. 본문 추출 시에는 페이지별 텍스트와 `text_complete`를 반환합니다. 브라우저를 자동으로 찾지 못하면 MCP 환경 변수 `ECLASS_OZ_BROWSER`에 실행파일 경로를 지정하세요.
 
 ## MCP 클라이언트 연결
 
@@ -179,8 +141,6 @@ Rust MCP에는 31개 도구가 있습니다. 조회·다운로드·제출 도구
 
 목록 응답은 `items`, `complete`, `has_more`, `next`, `next_param`으로 통일되어 있고, `next`는 `next_param`이 가리키는 인자에 그대로 넣습니다. `list_courses`는 기본으로 현재 학기만 반환하며 `all_terms=true`로 넓힙니다. 과목명이 여러 과목과 일치하면 `AMBIGUOUS_COURSE`와 `details.candidates`를 반환하고, 알 수 없는 인자는 `INVALID_ARGUMENT`로 거부합니다. 내려받은 파일은 `eclass-mcp downloads --keep 200`으로 정리할 수 있습니다.
 
-`download_syllabus_pdf`만 OZ 헬퍼가 있어야 동작합니다. 나머지 27개는 Rust 바이너리만으로 동작합니다.
-
 ### 온보딩 상태
 
 세션이 없어도 서버는 시작됩니다. 에이전트는 `get_onboarding_status`가 돌려주는 `next_actions[].code`를 보고 다음 할 일을 안내합니다.
@@ -210,7 +170,7 @@ Rust MCP는 17 MiB 단일 바이너리입니다. 시작 시간은 약 0.04초, �
 
 조회 요청은 20초 TTL 캐시와 single-flight로 묶습니다. 같은 과목과 주차를 반복해도 네트워크를 다시 타지 않습니다. `get_briefing`은 과목 공지를 최대 4개 과목씩 동시에 읽습니다.
 
-세션이 만료되면 저장한 Chrome 프로필에서 쿠키를 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`). 일반 조회와 다운로드, 제출은 로그인한 세션만 있으면 됩니다. OZ PDF를 쓸 때만 Python 헬퍼가 브라우저를 띄웁니다.
+세션이 만료되면 저장한 Chrome 프로필에서 쿠키를 다시 읽습니다(`ECLASS_AUTO_REFRESH=1`). 일반 조회와 다운로드, 제출은 로그인한 세션만 있으면 됩니다. OZ PDF 저장을 요청하면 전용 임시 브라우저를 띄웁니다.
 
 ## 보안
 
@@ -230,8 +190,8 @@ Rust MCP는 17 MiB 단일 바이너리입니다. 시작 시간은 약 0.04초, �
 | `ECLASS_CACHE_TTL` | `20` | 읽기 캐시 초. `0`이면 비활성화 |
 | `ECLASS_DOWNLOAD_DIR` | `~/Downloads/cau-eclass` | 다운로드 폴더 |
 | `ECLASS_ENABLE_SUBMISSION` | 꺼짐 | 정확히 `1`일 때만 실제 제출 허용 |
-| `ECLASS_OZ_HELPER` | `eclass-oz-export` | OZ PDF 헬퍼 실행 파일 경로 |
-| `ECLASS_OZ_BROWSER` | 시스템 Chrome 자동 탐색 | OZ 헬퍼가 사용할 브라우저 실행 파일 |
+| `ECLASS_BROWSER_PATH` | Chromium 계열 자동 탐색 | 로그인과 OZ PDF 저장에 사용할 브라우저 경로 |
+| `ECLASS_OZ_BROWSER` | `ECLASS_BROWSER_PATH` 또는 자동 탐색 | OZ PDF 저장 전용 브라우저 경로 |
 
 환경 변수는 MCP 클라이언트가 서버를 시작할 때 전달해야 합니다. 변경 후에는 연결을 다시 시작하세요.
 
@@ -245,13 +205,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo build --release
 
-# Python OZ helper
-uv sync --extra oz
-uv run pytest -q
-uv run ruff check src tests
+cargo test --locked oz::tests::exports_native_pdf_from_cross_origin_oz_frame -- --ignored
 ```
 
-테스트는 Rust 30개(단위 20, PDF 2, 서비스 8)와 Python 8개입니다. 실제 계정 로그인, OZ PDF, 과제 제출은 따로 검증해야 합니다. 공개 테스트에는 가상 데이터만 씁니다.
+브라우저 테스트는 로컬 합성 OZ 뷰어와 PDF를 사용합니다.
 
 - [Rust 빌드·배포](rust/README.md)
 - [에이전트 온보딩 스키마](rust/ONBOARDING.md)

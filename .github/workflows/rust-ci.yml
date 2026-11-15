@@ -5,10 +5,12 @@ on:
     paths:
       - "rust/**"
       - ".github/workflows/rust-*.yml"
+      - "skills/**"
   pull_request:
     paths:
       - "rust/**"
       - ".github/workflows/rust-*.yml"
+      - "skills/**"
   workflow_dispatch:
 
 permissions:
@@ -29,5 +31,23 @@ jobs:
         with:
           workspaces: rust
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked
+      - run: cargo test --locked oz::tests::exports_native_pdf_from_cross_origin_oz_frame -- --ignored
+
+  oz-browser:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo test --locked oz::tests::exports_native_pdf_from_cross_origin_oz_frame -- --ignored

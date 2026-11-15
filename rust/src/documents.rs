@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use lopdf::Document;
+use lopdf::{Dictionary, Document, Object, Stream};
 use regex::Regex;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -123,7 +123,8 @@ pub fn read_pdf(
     if !(1..=100_000).contains(&max_chars) {
         return Err(EclassError::InvalidMaxChars);
     }
-    let document = Document::load(path)?;
+    let mut document = Document::load(path)?;
+    add_ucs2_font_maps(&mut document);
     let page_count =
         u32::try_from(document.get_pages().len()).map_err(|_| EclassError::InvalidPageRange)?;
     let stop = end_page.unwrap_or_else(|| (start_page + 9).min(page_count));
@@ -220,6 +221,60 @@ pub fn read_pdf(
         next_offset,
         warnings,
     })
+}
+
+// OZ uses predefined Korean and Japanese CMaps without a ToUnicode stream.
+// Their character codes are already UCS-2. Give lopdf the Unicode mapping in
+// memory so extraction works without changing the downloaded PDF.
+fn add_ucs2_font_maps(document: &mut Document) {
+    for object in document.objects.values_mut() {
+        add_ucs2_font_map(object);
+    }
+}
+
+fn add_ucs2_font_map(object: &mut Object) {
+    let font = match object {
+        Object::Dictionary(dictionary) => dictionary,
+        Object::Stream(stream) => &mut stream.dict,
+        Object::Array(children) => {
+            for child in children {
+                add_ucs2_font_map(child);
+            }
+            return;
+        }
+        _ => return,
+    };
+    let ucs2 = matches!(
+        font.get(b"Encoding").and_then(Object::as_name),
+        Ok(b"UniKS-UCS2-H" | b"UniKS-UCS2-V" | b"UniJIS-UCS2-H" | b"UniJIS-UCS2-V")
+    );
+    if ucs2
+        && matches!(font.get(b"Subtype").and_then(Object::as_name), Ok(b"Type0"))
+        && !font.has(b"ToUnicode")
+    {
+        let cmap = br#"/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Eclass-UCS2 def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+2 beginbfrange
+<0000> <D7FF> <0000>
+<E000> <FFFF> <E000>
+endbfrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end"#;
+        font.remove(b"Encoding");
+        font.set("ToUnicode", Stream::new(Dictionary::new(), cmap.to_vec()));
+    }
+    for (_, child) in font.iter_mut() {
+        add_ucs2_font_map(child);
+    }
 }
 
 /// Redact sensitive URL query values before text reaches an MCP response.

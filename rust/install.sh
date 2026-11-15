@@ -10,11 +10,11 @@ os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
   Darwin)
-    case "$arch" in
-      arm64) target="aarch64-apple-darwin" ;;
-      x86_64) target="x86_64-apple-darwin" ;;
-      *) echo "Unsupported macOS architecture: $arch" >&2; exit 1 ;;
-    esac
+    if [ "$arch" != "arm64" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" != "1" ]; then
+      echo "This release requires an Apple Silicon Mac." >&2
+      exit 1
+    fi
+    target="aarch64-apple-darwin"
     ;;
   Linux)
     case "$arch" in

@@ -24,7 +24,7 @@
 - LearningX 401은 강좌 페이지의 LTI 폼을 저장된 쿠키로 다시 POST해 `xn_api_token`을 발급합니다. Canvas 쿠키가 만료됐으면 `eclass-mcp auth refresh --via aside`가 로그인된 Aside 브라우저에서 토큰만 회수합니다.
 - Canvas와 LearningX의 인증 방식 차이는 전송 계층에서 처리합니다. 인증값과 서명 URL은 도구 응답·로그·설정에 저장하지 않습니다.
 - 일반 조회는 같은 origin의 허용된 상대경로를 사용합니다. 파일 다운로드는 호스트 허용 목록과 리다이렉트별 인증 범위를 검사합니다.
-- FastMCP, Aside, CDP는 제거했습니다. 로그인과 세션 갱신은 Chrome 프로필 쿠키를 직접 읽으며 remote debugging 포트를 사용하지 않습니다.
+- 로그인과 세션 갱신은 Chrome 프로필 쿠키를 직접 읽습니다. `download_syllabus_pdf`는 임시 Chromium 프로필을 사용하고, PDF 경로와 선택적 페이지 텍스트를 반환합니다.
 
 ## 요약과 완전성
 

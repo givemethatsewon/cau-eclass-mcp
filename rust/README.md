@@ -1,21 +1,13 @@
 # Rust MCP
 
-This directory is the primary Rust implementation of the CAU e-Class MCP. The
-Python package is now only the optional OZ PDF helper.
+The CAU e-Class MCP ships as one Rust executable. It handles course and material
+reads, Canvas downloads and submissions, PDF text extraction, and native OZ
+syllabus export.
 
-## Status
-
-- **Ported:** session loading, Chrome profile cookie import, HTTP GET/pagination,
-  TTL cache with one loader per key, course/todo/briefing, weekly materials,
-  Commons PDF and video downloads, Canvas files, assignments/deadlines,
-  announcements, syllabus text, boards, groups, PDF validation/page text,
-  Canvas upload/submission over HTTP, and 28 MCP tool schemas.
-- **Optional Python helper:** OZ native PDF export (`download_syllabus_pdf`).
-  Rust invokes `eclass-oz-export` (Playwright) only for this tool; it returns a
-  clear error when the helper is not installed.
-- **Removed:** the legacy `aside`/CDP transport switch and the FastMCP Python
-  server. Rust always uses the saved HTTP session. `login` creates the Canvas
-  session; the LearningX token is minted from the LTI launch without a browser.
+`download_syllabus_pdf` opens an installed Chrome, Edge, Brave, or Chromium
+browser in a temporary profile. It drives the OZ viewer's Save → Adobe PDF
+flow and returns the verified PDF and optional page text. Set
+`ECLASS_OZ_BROWSER` if the executable is outside the standard locations.
 
 ## Build and run
 
@@ -25,8 +17,7 @@ cargo build --release
 ./target/release/eclass-mcp-rs --help
 ```
 
-The Rust binary creates the same `session.json` used by the OZ helper. Create it
-once with Rust:
+Create the e-Class session once:
 
 ```sh
 ./target/release/eclass-mcp-rs login
@@ -48,7 +39,7 @@ LearningX token, and prints structured next actions. The MCP tool
 `get_onboarding_status` exposes the same state to an agent. The schema and
 action codes are documented in [ONBOARDING.md](ONBOARDING.md).
 
-The session file is shared with the optional Python OZ helper: macOS
+The session file is stored in macOS
 `~/Library/Application Support/cau-eclass/session.json`, Linux
 `${XDG_CONFIG_HOME:-~/.config}/cau-eclass/session.json`, Windows
 `%APPDATA%\cau-eclass\session.json`. It contains only `.cau.ac.kr` cookies and
@@ -74,14 +65,9 @@ On Windows x64, run this in PowerShell:
 irm https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.ps1 | iex
 ```
 
-Run the `onboard` command printed by the installer. Users need no Rust, Python,
-uv, or virtualenv for the core tools. The release
-workflow builds macOS arm64/x86_64, Linux x86_64/arm64, and Windows x64 archives
-with SHA-256 files. The first beta is unsigned; the release notes must say so,
-and Windows may show SmartScreen. OZ PDF is optional and needs the small
-`eclass-oz-export` Python helper. See [RELEASING.md](RELEASING.md) for version
-pinning, the update path, signing, notarization, and the optional Homebrew tap.
-
+Run the `onboard` command printed by the installer. Releases include macOS
+Apple Silicon, Linux x86_64/ARM64, and Windows x64 archives with SHA-256 files.
+See [RELEASING.md](RELEASING.md) for version pinning and update instructions.
 
 ## Verification
 
@@ -93,8 +79,12 @@ cargo build --release
 ```
 
 The test suite includes a synthetic wiremock Canvas/LearningX server, a real
-PDF fixture, session/cookie rules, cache behavior, a fake OZ helper invocation,
-and MCP initialize/tools calls. It does not use a real school account.
+PDF fixture, session/cookie rules, cache behavior, and MCP initialize/tools calls.
+The Chromium integration test uses a local cross-origin OZ fixture:
+
+```sh
+cargo test --locked oz::tests::exports_native_pdf_from_cross_origin_oz_frame -- --ignored
+```
 
 ## Measured locally
 
@@ -109,7 +99,7 @@ initialize, and one tool listing; CPU is user+system from `/usr/bin/time -l`.
 
 Approximate improvement: **18–21× faster startup**, **~90–91% less memory**,
 and a **17 MiB single release binary**. The Rust server spawns no browser for
-reads/downloads; the Python browser mode required an external Chrome tree (about
+the reads/downloads measured here; the Python browser mode required an external Chrome tree (about
 674 MiB / 7 processes in the local test).
 
 These are harness measurements, not real e-Class latency. Network time
@@ -127,25 +117,3 @@ fonts/layouts.
 - `service.rs` owns pagination, briefing concurrency, deadlines and downloads.
 - `mcp.rs` is a small stdio JSON-RPC server rather than a framework, keeping
   startup and memory low.
-
-## Can Python be removed?
-
-For the core read/download path, **yes**. Nothing there needs Python at
-runtime:
-
-- session/cookie handling, Chrome profile cookie import, HTTP, pagination, cache, catalog,
-  briefing, PDF validation/text and MCP stdio all have Rust implementations.
-- `pypdf` is replaced by `lopdf`; the fixture and integration tests cover the
-  normal page-text path.
-- FastMCP, Aside, and CDP are removed; the OZ helper is the only optional Python process.
-
-The only remaining browser-bound feature is:
-
-1. OZ native PDF export (`download_syllabus_pdf`): DOM clicks, a Save dialog and
-   a browser download event.
-
-It is **not a Python-language requirement**; it is a browser UI flow. The Rust
-core invokes an optional `eclass-oz-export` helper with Playwright. Assignment
-submission is already Rust HTTP, synthetic-tested and disabled by default;
-real-account verification remains separate.
-

@@ -8,10 +8,9 @@ The Rust build is intended to be installed as a **prebuilt binary**, not through
 For the first beta, keep the release cheap and reversible:
 
 - Publish `tar.gz`/`zip` archives with SHA-256 files.
-- Keep the install scripts version-pinnable (`ECLASS_VERSION=rust-v0.1.0`).
+- Keep the install scripts version-pinnable (`ECLASS_VERSION=rust-v0.2.0`).
 - State clearly in the release notes that macOS/Windows binaries are unsigned.
-- Python is not a fallback for the MCP server. It is only the optional OZ PDF
-  helper: `uv tool install --python 3.12 'cau-eclass-mcp[oz]==0.5.0'`.
+- OZ PDF export uses an installed Chromium browser.
 - Windows may show SmartScreen; macOS may show a Gatekeeper warning. Tell users
   how to verify the SHA-256 and how to proceed.
 
@@ -25,7 +24,6 @@ signing after there are real users.
 | Platform | Target |
 |---|---|
 | macOS Apple Silicon | `aarch64-apple-darwin` |
-| macOS Intel | `x86_64-apple-darwin` |
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
 | Linux arm64 | `aarch64-unknown-linux-gnu` |
 | Windows x64 | `x86_64-pc-windows-msvc` |
@@ -35,7 +33,7 @@ Each release contains `eclass-mcp-<target>.tar.gz` (or `.zip`) and a matching
 archives target glibc 2.35 or later.
 
 Create a release manually from **Actions → Rust release**, with a tag such as
-`rust-v0.1.0`. The workflow builds the matrix, checksums the archives, and
+`rust-v0.2.0`. The workflow builds the matrix, checksums the archives, and
 creates the GitHub Release at the workflow commit. The tag must match the
 Cargo package version. A regular Rust release becomes GitHub's latest release.
 To install a prerelease, set `ECLASS_VERSION` to its exact tag.
@@ -51,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main
 Pin a version when needed:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/rust-v0.1.0/rust/install.sh | ECLASS_VERSION=rust-v0.1.0 bash
+curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/rust-v0.2.0/rust/install.sh | ECLASS_VERSION=rust-v0.2.0 bash
 ```
 
 Windows PowerShell:
@@ -92,15 +90,13 @@ brew tap givemethatsewon/cau-eclass
 brew install eclass-mcp
 ```
 
-The formula should download the arm64/x86_64 release archive, verify its
+The formula should download the Apple Silicon release archive, verify its
 SHA-256, and install the `eclass-mcp` binary. This is optional; the install
 script is the zero-dependency path.
 
 ## Versioning
 
-`rust/Cargo.toml` is the primary MCP version. The Python package is now the
-independent `0.5.x` OZ helper. Use `rust-vX.Y.Z` and `vX.Y.Z` tags so the two
-release workflows cannot collide.
+`rust/Cargo.toml` is the MCP version. Releases use `rust-vX.Y.Z` tags.
 
 ## First run
 

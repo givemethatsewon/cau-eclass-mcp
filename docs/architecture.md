@@ -1,15 +1,15 @@
 # 구조와 브라우저 경계
 
-2026-11-12 갱신. 이 서버는 **로그인만 Chrome 프로필, 이후 읽기·다운로드·제출은 HTTP**를 기본으로 한다. remote debugging 포트나 CDP 연결을 사용하지 않는다.
+로그인은 전용 Chromium 프로필에서 진행하며 일반 조회·다운로드·제출은 HTTP를 사용한다. OZ 강의계획서 PDF 저장은 Rust 서버가 별도의 임시 Chromium 프로필을 열어 처리한다.
 
 ```text
 MCP client
-  → Rust stdio server (28 tools)
+  → Rust stdio server (31 tools)
   → EClassService (pagination, dates, briefing, validation)
   → HttpTransport (TTL cache + single-flight, cookie jar)
       ├ Canvas /api/v1 + LearningX /learningx/api/v1
       └ session.json (0600)
-  → optional OZ helper (Playwright, only download_syllabus_pdf)
+  → Chromium CDP (temporary profile, only download_syllabus_pdf)
 ```
 
 ## HTTP 우선 전송
@@ -20,9 +20,9 @@ MCP client
 4. 401·로그인 HTML을 만나면 저장된 Chrome 프로필에서 쿠키를 다시 읽는다. 프로필이 없거나 잠겨 있으면 `eclass-mcp login`을 안내한다.
 5. LearningX 401은 강좌 페이지의 LTI 폼을 저장된 쿠키로 다시 POST해 토큰을 스스로 발급한다. 그래도 실패하면 `auth refresh --via aside`가 로그인된 Aside 브라우저에서 토큰만 회수한다.
 
-이 구조의 핵심 이점:
+일반 HTTP 요청의 동작
 
-- 실행 중 브라우저·Playwright·페이지 컨텍스트가 필요 없다.
+- 저장된 세션으로 실행하며 브라우저 프로세스는 띄우지 않는다.
 - 화면 리소스(JS/CSS/이미지/폰트)를 로드하지 않는다.
 - 동일 응답을 TTL 캐시와 single-flight로 재사용한다.
 - 과목별 공지 조회를 최대 4개까지 병렬화한다.
@@ -31,7 +31,7 @@ MCP client
 
 `download_syllabus_pdf`만 브라우저 UI가 필요하다. OZ 뷰어는 `/oz80/server`에서 보고서 데이터를 받고, Save → Adobe PDF에서 `OZJSViewer_export.js`를 지연 로드해 브라우저 안에서 PDF를 만든다. 서버에서 바로 받을 PDF URL은 없다.
 
-Rust MCP는 이 도구를 받으면 선택적 `eclass-oz-export` 헬퍼를 subprocess로 실행한다. 헬퍼는 같은 `session.json`의 쿠키를 Playwright 컨텍스트에 주입하고, OZ Save 대화상자를 조작해 PDF를 만든 뒤 경로·크기·해시·페이지 텍스트를 JSON으로 돌려준다. Rust는 반환 경로가 다운로드 디렉터리 안인지, `%PDF-` 헤더와 크기가 유효한지 다시 검증한다.
+Rust는 임시 Chromium 프로필에 Canvas·OZ에 해당하는 세션 쿠키를 주입한다. CDP는 임시 브라우저의 로컬 연결로만 사용한다. 지정된 강좌 페이지와 OZ 프레임을 확인한 뒤 Save → Adobe PDF를 실행하고 다운로드가 끝나면 브라우저를 종료한다. 크기·형식·페이지를 검증한 파일만 다운로드 폴더에 저장하고 해시와 선택적 페이지 본문을 반환한다.
 
 과제 제출은 브라우저가 필요 없다. Canvas 업로드 티켓 → multipart 업로드(쿠키·인증 헤더 없이) → 제출 POST → readback 검증을 Rust HTTP로 수행한다. 기본 비활성화이며 `ECLASS_ENABLE_SUBMISSION=1`과 준비 계획·확인 문자열이 필요하다.
 
@@ -46,17 +46,15 @@ Rust MCP는 이 도구를 받으면 선택적 `eclass-oz-export` 헬퍼를 subpr
 - 일반 조회는 같은 origin의 알려진 상대경로만 허용한다. 페이지네이션의 cross-origin 링크는 거부한다.
 - 다운로드는 허용 호스트만 따르며, 리다이렉트마다 목적지를 재검증한다.
 - LearningX Bearer 토큰은 LearningX 요청에만 붙이고, 다운로드 호스트에는 보내지 않는다.
-- OZ 헬퍼는 stdout으로 PDF 결과 JSON만 출력하고, 오류 문자열에서 URL을 제거한다.
+- OZ DevTools 오류에서 브라우저 메시지와 URL을 노출하지 않는다. PDF가 검증되기 전에 최종 경로에 파일을 게시하지 않는다.
 - 학습자료·공지 본문은 신뢰하지 않는 데이터로 취급한다.
 
 ## 구성
 
 - `rust/src/session.rs`: `session.json`, Chrome 프로필 쿠키 import, 온보딩 상태
 - `rust/src/http.rs`: HTTP GET, 리다이렉트, 다운로드, TTL 캐시
-- `rust/src/service.rs`: 페이지네이션, briefing, 자료, PDF, 다운로드, 제출, OZ 헬퍼 호출
-- `rust/src/mcp.rs`: stdio JSON-RPC MCP 서버 28개 도구
-- `src/eclass_mcp/oz_export.py`: OZ PDF 전용 Python/Playwright 헬퍼
-- `src/eclass_mcp/session.py`: 헬퍼가 읽는 세션 형식
+- `rust/src/service.rs`: 페이지네이션, briefing, 자료, PDF, 다운로드, 제출, OZ PDF 도구
+- `rust/src/mcp.rs`: stdio JSON-RPC MCP 서버
+- `rust/src/oz.rs`: OZ 프레임 선택, PDF 다운로드·검증
+- `rust/src/cdp.rs`: 임시 Chromium 프로세스와 CDP 연결
 - `skills/cau-eclass/SKILL.md`: 에이전트 스킬 원본
-
-Python 패키지에는 MCP 서버, FastMCP, CDP, 전체 HTTP 서비스가 없다. OZ 헬퍼와 세션 로더만 남긴다.

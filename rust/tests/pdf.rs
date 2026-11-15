@@ -33,3 +33,50 @@ fn rejects_impossible_ranges() {
     assert!(read_pdf(&fixture(), 3, None, 0, 100).is_err());
     assert!(read_pdf(&fixture(), 1, None, 0, 0).is_err());
 }
+
+#[test]
+fn reads_ucs2_text_from_oz_fonts_without_embedded_unicode_maps() {
+    use lopdf::{Document, Stream, dictionary};
+
+    let mut pdf = Document::with_version("1.5");
+    let pages = pdf.new_object_id();
+    let font_korean = pdf.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "Gulim",
+        "Encoding" => "UniKS-UCS2-H"
+    });
+    let font_japanese = pdf.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "MS-Gothic",
+        "Encoding" => "UniJIS-UCS2-H"
+    });
+    let content = pdf.add_object(Stream::new(
+        dictionary! {},
+        b"BT /Ko 12 Tf <C218C5C5ACC4D68D> Tj ET BT /Ja 12 Tf <65E5672C8A9E> Tj ET".to_vec(),
+    ));
+    let page = pdf.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages,
+        "Resources" => dictionary! { "Font" => dictionary! { "Ko" => font_korean, "Ja" => font_japanese } },
+        "Contents" => content
+    });
+    pdf.set_object(
+        pages,
+        dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+    );
+    let catalog = pdf.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+    pdf.trailer.set("Root", catalog);
+    let directory = tempfile::tempdir().unwrap();
+    let pdf_path = directory.path().join("oz.pdf");
+    pdf.save(&pdf_path).unwrap();
+
+    let result = read_pdf(&pdf_path, 1, None, 0, 24_000).unwrap();
+    assert!(
+        result.pages[0].text.contains("수업"),
+        "{:?}",
+        result.pages[0].text
+    );
+    assert!(
+        result.pages[0].text.contains("日本語"),
+        "{:?}",
+        result.pages[0].text
+    );
+    assert!(result.document_complete);
+}

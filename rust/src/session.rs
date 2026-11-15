@@ -1,7 +1,7 @@
 //! Browser-session persistence and Chrome profile cookie import.
 //!
-//! The file format is shared with the Python OZ helper: `.cau.ac.kr` cookies,
-//! an optional browser id, and a `version: 1` envelope.
+//! The file stores `.cau.ac.kr` cookies, an optional browser id and a
+//! `version: 1` envelope compatible with existing installs.
 
 use std::{
     collections::BTreeMap,
@@ -256,7 +256,7 @@ fn normalize_domain(value: &str) -> String {
     value.trim_start_matches('.').to_ascii_lowercase()
 }
 
-fn is_cau_domain(value: &str) -> bool {
+pub(crate) fn is_cau_domain(value: &str) -> bool {
     let domain = normalize_domain(value);
     domain == COOKIE_DOMAIN || domain.ends_with(&format!(".{COOKIE_DOMAIN}"))
 }
@@ -281,13 +281,11 @@ pub fn default_session_file() -> PathBuf {
     base.join("session.json")
 }
 
-fn home_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+pub(crate) fn home_dir() -> PathBuf {
+    env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn expand_home(path: &Path) -> PathBuf {
+pub(crate) fn expand_home(path: &Path) -> PathBuf {
     let value = path.to_string_lossy();
     if let Some(rest) = value.strip_prefix("~/") {
         home_dir().join(rest)

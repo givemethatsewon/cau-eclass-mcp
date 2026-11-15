@@ -3,9 +3,8 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::{DateTime, Datelike, SecondsFormat, Utc};
@@ -25,6 +24,8 @@ use crate::{
     documents::{inspect_pdf, read_pdf, sanitize_text},
     error::EclassError,
     http::HttpTransport,
+    oz,
+    session::{expand_home, home_dir},
 };
 
 /// A paginated Canvas response.
@@ -80,7 +81,6 @@ struct MaterialView {
 pub struct EClassService {
     transport: Arc<HttpTransport>,
     output_dir: PathBuf,
-    oz_helper: PathBuf,
     enable_submission: bool,
     enable_delete: bool,
     material_cache: Mutex<HashMap<String, CachedMaterial>>,
@@ -101,13 +101,9 @@ impl EClassService {
         enable_submission: bool,
     ) -> Self {
         let output_dir = output_dir.unwrap_or_else(default_output_dir);
-        let oz_helper = std::env::var_os("ECLASS_OZ_HELPER")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("eclass-oz-export"));
         Self {
             transport,
             output_dir,
-            oz_helper,
             enable_submission,
             enable_delete: std::env::var("ECLASS_ENABLE_DELETE").as_deref() == Ok("1"),
             material_cache: Mutex::new(HashMap::new()),
@@ -115,13 +111,6 @@ impl EClassService {
             plans: Mutex::new(HashMap::new()),
             submission_lock: Mutex::new(()),
         }
-    }
-
-    /// Override the OZ helper executable (used by tests and packaging).
-    #[must_use]
-    pub fn with_oz_helper(mut self, path: PathBuf) -> Self {
-        self.oz_helper = path;
-        self
     }
 
     /// Allow or refuse file deletion (used by tests).
@@ -1721,7 +1710,7 @@ impl EClassService {
             json!({
                 "tool": "download_syllabus_pdf",
                 "arguments": {"course_id": course_id},
-                "requires": "optional eclass-oz-export helper (Python `oz` extra with Playwright)"
+                "requires": "installed Chromium browser (Chrome, Edge, Brave, or Chromium)"
             })
         });
         Ok(json!({
@@ -1736,109 +1725,26 @@ impl EClassService {
         }))
     }
 
-    /// Export an OZ syllabus through the optional Python/Playwright helper.
-    ///
-    /// The helper receives only the course ID, output directory and session
-    /// file. It returns the same PDF/text shape as the Python reference.
+    /// Export the course's native OZ PDF through the installed Chromium browser.
     pub async fn syllabus_document(
         &self,
         course_id: u32,
         extract_text: bool,
     ) -> Result<Value, EclassError> {
-        std::fs::create_dir_all(&self.output_dir)?;
-        let mut command = tokio::process::Command::new(&self.oz_helper);
-        command
-            .arg("--course-id")
-            .arg(course_id.to_string())
-            .arg("--output-dir")
-            .arg(&self.output_dir)
-            .arg("--session-file")
-            .arg(self.transport.session_file())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if !extract_text {
-            command.arg("--no-extract-text");
-        }
-        let output = match tokio::time::timeout(Duration::from_secs(180), command.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(EclassError::OzHelper(
-                    "install the optional `eclass-oz-export` helper (Python package with the `oz` extra) or set ECLASS_OZ_HELPER"
-                        .to_string(),
-                ));
-            }
-            Ok(Err(_)) => {
-                return Err(EclassError::OzHelper(
-                    "could not start the OZ PDF helper".to_string(),
-                ));
-            }
-            Err(_) => {
-                return Err(EclassError::OzHelper(
-                    "OZ PDF export timed out after 180 seconds".to_string(),
-                ));
-            }
-        };
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr)
-                .replace('\n', " ")
-                .trim()
-                .chars()
-                .take(300)
-                .collect::<String>();
-            return Err(EclassError::OzHelper(if message.is_empty() {
-                "OZ PDF helper exited without a message".to_string()
-            } else {
-                message
-            }));
-        }
-        if output.stdout.len() > 16 * 1024 * 1024 {
-            return Err(EclassError::OzHelper(
-                "OZ PDF helper response exceeded the read limit".to_string(),
+        if course_id == 0 {
+            return Err(EclassError::InvalidArgument(
+                "course_id must be positive".to_string(),
             ));
         }
-        let mut value: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
-            EclassError::OzHelper("OZ PDF helper returned invalid JSON".to_string())
-        })?;
-        let path = value
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| EclassError::OzHelper("OZ PDF helper returned no path".to_string()))?;
-        let output_root = self
-            .output_dir
-            .canonicalize()
-            .map_err(|_| EclassError::OzHelper("output directory is unavailable".to_string()))?;
-        let path = Path::new(path)
-            .canonicalize()
-            .map_err(|_| EclassError::OzHelper("OZ PDF output was not created".to_string()))?;
-        if !path.starts_with(&output_root) {
-            return Err(EclassError::OzHelper(
-                "OZ PDF helper returned a path outside the download directory".to_string(),
-            ));
-        }
-        let metadata = std::fs::metadata(&path)?;
-        if metadata.len() == 0 || metadata.len() > 64 * 1024 * 1024 {
-            return Err(EclassError::OzHelper(
-                "OZ PDF is empty or exceeds 64 MiB".to_string(),
-            ));
-        }
-        if value.get("bytes").and_then(Value::as_u64) != Some(metadata.len()) {
-            return Err(EclassError::OzHelper(
-                "OZ PDF helper size did not match the file".to_string(),
-            ));
-        }
-        let header = std::fs::read(&path)?
-            .into_iter()
-            .take(5)
-            .collect::<Vec<_>>();
-        if header != b"%PDF-" {
-            return Err(EclassError::OzHelper(
-                "OZ export did not return a valid PDF".to_string(),
-            ));
-        }
-        value["course_id"] = json!(course_id);
-        Ok(value)
+        let session = self.transport.session().ok_or(EclassError::NoSession)?;
+        oz::export(
+            self.transport.base(),
+            &session,
+            &self.output_dir,
+            course_id,
+            extract_text,
+        )
+        .await
     }
 
     /// LearningX boards.
@@ -2355,7 +2261,7 @@ impl EClassService {
     }
 
     fn fingerprint(path: &str) -> Result<FileFingerprint, EclassError> {
-        let path = expand_home(path);
+        let path = expand_home(Path::new(path));
         if !path.is_file() || std::fs::metadata(&path)?.len() > 10 * 1024 * 1024 {
             return Err(EclassError::BrowserOnly(
                 "each submission file must exist and be at most 10 MiB",
@@ -2629,17 +2535,6 @@ impl EClassService {
     }
 }
 
-fn expand_home(value: &str) -> PathBuf {
-    if let Some(rest) = value.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(rest)
-    } else {
-        PathBuf::from(value)
-    }
-}
-
 fn action(code: &str, message: &str, command: Option<&str>) -> Value {
     json!({"code": code, "message": message, "command": command})
 }
@@ -2733,12 +2628,9 @@ async fn announcements_on(
 
 pub(crate) fn default_output_dir() -> PathBuf {
     if let Some(value) = std::env::var_os("ECLASS_DOWNLOAD_DIR") {
-        return expand_home(&value.to_string_lossy());
+        return expand_home(Path::new(&value));
     }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Downloads/cau-eclass")
+    home_dir().join("Downloads/cau-eclass")
 }
 
 fn unique_suffix() -> String {

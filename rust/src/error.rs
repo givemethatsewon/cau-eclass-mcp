@@ -88,8 +88,12 @@ pub enum EclassError {
     InvalidMaxChars,
     #[error("unsupported operation in the Rust core: {0}")]
     BrowserOnly(&'static str),
-    #[error("OZ PDF helper failed: {0}")]
-    OzHelper(String),
+    #[error("OZ PDF export failed: {0}")]
+    OzExport(&'static str),
+    #[error(
+        "Chromium browser not found for OZ PDF export; set ECLASS_OZ_BROWSER to the executable path"
+    )]
+    OzBrowserNotFound,
     #[error("unknown tool: {0}")]
     UnknownTool(String),
     #[error("session file is invalid or unsupported")]
@@ -177,7 +181,8 @@ impl EclassError {
             Self::InvalidPageRange => "INVALID_ARGUMENT",
             Self::InvalidMaxChars => "INVALID_ARGUMENT",
             Self::BrowserOnly(_) => "BROWSER_ONLY",
-            Self::OzHelper(_) => "OZ_HELPER",
+            Self::OzExport(_) => "OZ_EXPORT",
+            Self::OzBrowserNotFound => "OZ_BROWSER_NOT_FOUND",
             Self::UnknownTool(_) => "UNKNOWN_TOOL",
             Self::InvalidSession => "INVALID_SESSION",
             Self::NoSession => "NO_SESSION",

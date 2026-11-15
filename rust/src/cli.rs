@@ -12,13 +12,14 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::{
+    browser::find_browser,
     error::EclassError,
     http::HttpTransport,
     mcp,
     service::EClassService,
     session::{
-        Cookie, ORIGIN, chrome_profile_dir, default_session_file, delete_session, load_session,
-        login_from_profile, refresh_from_profile, save_session, verify_session,
+        Cookie, ORIGIN, chrome_profile_dir, default_session_file, delete_session, expand_home,
+        load_session, login_from_profile, refresh_from_profile, save_session, verify_session,
     },
 };
 
@@ -572,8 +573,8 @@ fn config(client: &str, session_file: Option<PathBuf>) -> anyhow::Result<i32> {
         "ECLASS_DOWNLOAD_DIR",
         "ECLASS_CACHE_TTL",
         "ECLASS_AUTO_REFRESH",
-        "ECLASS_OZ_HELPER",
         "ECLASS_OZ_BROWSER",
+        "ECLASS_BROWSER_PATH",
     ] {
         if let Ok(value) = std::env::var(key) {
             env.insert(key.to_string(), json!(value));
@@ -605,84 +606,6 @@ fn print_json(value: &serde_json::Value) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     std::io::stdout().flush()?;
     Ok(())
-}
-
-fn expand_home(path: &Path) -> PathBuf {
-    let value = path.to_string_lossy();
-    if let Some(rest) = value.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(rest)
-    } else {
-        path.to_path_buf()
-    }
-}
-
-fn find_browser(explicit: Option<PathBuf>) -> Result<PathBuf, EclassError> {
-    if let Some(path) = explicit {
-        return path
-            .is_file()
-            .then_some(path)
-            .ok_or(EclassError::BrowserNotFound);
-    }
-    if let Some(path) = std::env::var_os("ECLASS_BROWSER_PATH").map(PathBuf::from)
-        && path.is_file()
-    {
-        return Ok(path);
-    }
-    let mut candidates = Vec::new();
-    if cfg!(target_os = "macos") {
-        for app in [
-            "Google Chrome",
-            "Microsoft Edge",
-            "Brave Browser",
-            "Chromium",
-        ] {
-            candidates.push(PathBuf::from(format!(
-                "/Applications/{app}.app/Contents/MacOS/{app}"
-            )));
-        }
-    } else if cfg!(windows) {
-        for root in [
-            std::env::var_os("ProgramFiles"),
-            std::env::var_os("ProgramFiles(x86)"),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let root = PathBuf::from(root);
-            candidates.extend([
-                root.join("Google/Chrome/Application/chrome.exe"),
-                root.join("Microsoft/Edge/Application/msedge.exe"),
-                root.join("BraveSoftware/Brave-Browser/Application/brave.exe"),
-            ]);
-        }
-    }
-    for name in [
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "microsoft-edge",
-        "brave-browser",
-    ] {
-        if let Some(path) = find_in_path(name) {
-            candidates.push(path);
-        }
-    }
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or(EclassError::BrowserNotFound)
-}
-
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|directory| directory.join(name))
-            .find(|candidate| candidate.is_file())
-    })
 }
 
 fn launch_browser(executable: &Path, profile: &Path, url: &str) -> anyhow::Result<()> {
