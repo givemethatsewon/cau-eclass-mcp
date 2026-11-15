@@ -4,9 +4,13 @@ $Repo = if ($env:ECLASS_REPO) { $env:ECLASS_REPO } else { "givemethatsewon/cau-e
 $Version = if ($env:ECLASS_VERSION) { $env:ECLASS_VERSION } else { "latest" }
 $InstallDir = if ($env:ECLASS_INSTALL_DIR) { $env:ECLASS_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "eclass-mcp\bin" }
 
-$Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if ($Arch -ne "X64") {
-    throw "Unsupported Windows architecture: $Arch. Use the x64 release."
+$Arch = if ([System.Environment]::Is64BitOperatingSystem) {
+    if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+} else {
+    $env:PROCESSOR_ARCHITECTURE
+}
+if ($Arch -ne "AMD64") {
+    throw "Unsupported Windows architecture: $Arch. This installer supports Windows x64."
 }
 $Target = "x86_64-pc-windows-msvc"
 $Asset = "eclass-mcp-$Target.zip"
@@ -20,8 +24,8 @@ $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("eclass-mcp-" + [guid]::NewG
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
     Write-Host "Downloading $Asset..."
-    Invoke-WebRequest "$Base/$Asset" -OutFile (Join-Path $Tmp $Asset)
-    Invoke-WebRequest "$Base/$Asset.sha256" -OutFile (Join-Path $Tmp "$Asset.sha256")
+    Invoke-WebRequest -UseBasicParsing "$Base/$Asset" -OutFile (Join-Path $Tmp $Asset)
+    Invoke-WebRequest -UseBasicParsing "$Base/$Asset.sha256" -OutFile (Join-Path $Tmp "$Asset.sha256")
 
     $Expected = (Get-Content (Join-Path $Tmp "$Asset.sha256")).Split(" ")[0].ToLower()
     $Actual = (Get-FileHash (Join-Path $Tmp $Asset) -Algorithm SHA256).Hash.ToLower()
@@ -29,12 +33,14 @@ try {
 
     Expand-Archive -Path (Join-Path $Tmp $Asset) -DestinationPath $Tmp
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item (Join-Path $Tmp "eclass-mcp-$Target\eclass-mcp.exe") (Join-Path $InstallDir "eclass-mcp.exe") -Force
+    $Executable = Join-Path $InstallDir "eclass-mcp.exe"
+    Copy-Item (Join-Path $Tmp "eclass-mcp-$Target\eclass-mcp.exe") $Executable -Force
 
-    Write-Host "Installed to $InstallDir\eclass-mcp.exe"
-    & (Join-Path $InstallDir "eclass-mcp.exe") --version
-    Write-Host "Add $InstallDir to PATH, then run:"
-    Write-Host "  eclass-mcp onboard --client claude"
+    & $Executable --version
+    if ($LASTEXITCODE -ne 0) { throw "eclass-mcp --version failed (exit $LASTEXITCODE)" }
+    Write-Host "Installed to $Executable"
+    $QuotedExecutable = $Executable.Replace("'", "''")
+    Write-Host "Next: & '$QuotedExecutable' onboard --client claude"
 } finally {
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }

@@ -62,4 +62,4 @@ case ":$PATH:" in
   *":${INSTALL_DIR}:"*) ;;
   *) echo "Add this to your shell profile: export PATH=\"${INSTALL_DIR}:\$PATH\"" >&2 ;;
 esac
-echo "Next: eclass-mcp onboard --client claude"
+printf 'Next: "%s/eclass-mcp" onboard --client claude\n' "$INSTALL_DIR"

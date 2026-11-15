@@ -30,26 +30,28 @@ signing after there are real users.
 | Linux arm64 | `aarch64-unknown-linux-gnu` |
 | Windows x64 | `x86_64-pc-windows-msvc` |
 
-Each release contains `eclass-mcp-<target>.tar.gz` (or `.zip`), a matching
-`.sha256`, `README.md`, `PORTING.md`, and `ONBOARDING.md`.
+Each release contains `eclass-mcp-<target>.tar.gz` (or `.zip`) and a matching
+`.sha256`. Each archive includes documentation and license files. The Linux
+archives target glibc 2.35 or later.
 
 Create a release manually from **Actions → Rust release**, with a tag such as
 `rust-v0.1.0`. The workflow builds the matrix, checksums the archives, and
-creates the GitHub Release. GitHub occasionally retires runner labels; update
-the matrix in `.github/workflows/rust-release.yml` if a label stops resolving.
+creates the GitHub Release at the workflow commit. The tag must match the
+Cargo package version. A regular Rust release becomes GitHub's latest release.
+To install a prerelease, set `ECLASS_VERSION` to its exact tag.
 
 ## User installation
 
 macOS/Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | bash
 ```
 
 Pin a version when needed:
 
 ```sh
-ECLASS_VERSION=rust-v0.1.0 curl -fsSL .../rust/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/rust-v0.1.0/rust/install.sh | ECLASS_VERSION=rust-v0.1.0 bash
 ```
 
 Windows PowerShell:
@@ -59,7 +61,8 @@ irm https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/i
 ```
 
 Both scripts verify SHA-256 and install to `~/.local/bin` (or
-`%LOCALAPPDATA%\eclass-mcp\bin`) by default. Users do not need Rust.
+`%LOCALAPPDATA%\eclass-mcp\bin`) by default. They print an onboarding command
+that uses the installed executable's full path.
 
 ## Update path
 

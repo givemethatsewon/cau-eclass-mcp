@@ -14,7 +14,11 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: rust-release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -22,16 +26,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             archive: tar.gz
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
           - os: windows-latest
@@ -43,6 +47,16 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
+      - name: Verify release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml)
+          if [ -z "$version" ] || [ "$RELEASE_TAG" != "rust-v$version" ]; then
+            echo "Expected release tag rust-v$version" >&2
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -64,7 +78,7 @@ jobs:
             chmod +x "dist/${name}/eclass-mcp"
             strip "dist/${name}/eclass-mcp" || true
           fi
-          cp README.md PORTING.md "dist/${name}/"
+          cp README.md PORTING.md ONBOARDING.md ../LICENSE ../NOTICE "dist/${name}/"
           if [ "${{ matrix.archive }}" = "zip" ]; then
             (cd dist && powershell -NoProfile -Command "Compress-Archive -Path '${name}' -DestinationPath '${name}.zip'")
             file="dist/${name}.zip"
@@ -79,6 +93,17 @@ jobs:
           fi
         env:
           target: ${{ matrix.target }}
+      - name: Check packaged executable
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          binary="dist/eclass-mcp-${TARGET}/eclass-mcp"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            binary="$binary.exe"
+          fi
+          "$binary" --version
+          "$binary" config --client claude > /dev/null
       - uses: actions/upload-artifact@v4
         with:
           name: eclass-mcp-${{ matrix.target }}
@@ -91,6 +116,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -99,7 +126,57 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: Rust core ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: CAU e-Class MCP ${{ inputs.tag }}
           prerelease: ${{ inputs.prerelease }}
+          make_latest: ${{ !inputs.prerelease && 'true' || 'false' }}
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          body: |
+            Rust, Python, uv 설치 없이 운영체제에 맞는 실행파일을 설치할 수 있습니다.
+            macOS(Apple Silicon·Intel), Linux(glibc 2.35 이상, x86_64·ARM64), Windows(x64)를 지원합니다.
+            설치 스크립트는 다운로드한 압축 파일의 SHA-256을 검증합니다.
+
+            **macOS / Linux**
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ inputs.tag }}/rust/install.sh | ECLASS_VERSION=${{ inputs.tag }} bash
+            ```
+
+            **Windows PowerShell**
+            ```powershell
+            $env:ECLASS_VERSION = '${{ inputs.tag }}'
+            irm https://raw.githubusercontent.com/${{ github.repository }}/${{ inputs.tag }}/rust/install.ps1 | iex
+            Remove-Item Env:ECLASS_VERSION
+            ```
+
+            설치 후 스크립트가 출력하는 명령으로 e-Class에 로그인하세요. 강의 계획서 OZ PDF 저장 기능에는 선택 Python 헬퍼가 필요합니다.
+            macOS 실행파일은 Developer ID 서명과 공증을 거치지 않았으며, Windows 실행파일에는 Authenticode 서명이 없습니다.
           files: release/*
+
+  verify-install:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      ECLASS_REPO: ${{ github.repository }}
+      ECLASS_VERSION: ${{ inputs.prerelease && inputs.tag || 'latest' }}
+      INSTALLER_REF: ${{ github.sha }}
+    steps:
+      - name: Verify public macOS and Linux installer
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -o pipefail
+          export ECLASS_INSTALL_DIR="$RUNNER_TEMP/eclass-install"
+          curl --retry 5 --retry-all-errors -fsSL "https://raw.githubusercontent.com/$ECLASS_REPO/$INSTALLER_REF/rust/install.sh" | bash
+          "$ECLASS_INSTALL_DIR/eclass-mcp" --version
+      - name: Verify public Windows PowerShell installer
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:ECLASS_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "eclass-install"
+          irm -UseBasicParsing "https://raw.githubusercontent.com/$env:ECLASS_REPO/$env:INSTALLER_REF/rust/install.ps1" | iex
+          & (Join-Path $env:ECLASS_INSTALL_DIR "eclass-mcp.exe") --version

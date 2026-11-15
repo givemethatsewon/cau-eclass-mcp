@@ -62,14 +62,20 @@ the MCP client instead of failing at startup.
 
 ## Distribution
 
-The intended user path is **GitHub Releases**, not a local Rust install:
+Install the prebuilt binary from [GitHub Releases](https://github.com/givemethatsewon/cau-eclass-mcp/releases/latest).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | sh
-eclass-mcp onboard --client claude
+curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | bash
 ```
 
-Users need no Rust, Python, uv, or virtualenv for the 26 HTTP tools. The release
+On Windows x64, run this in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.ps1 | iex
+```
+
+Run the `onboard` command printed by the installer. Users need no Rust, Python,
+uv, or virtualenv for the core tools. The release
 workflow builds macOS arm64/x86_64, Linux x86_64/arm64, and Windows x64 archives
 with SHA-256 files. The first beta is unsigned; the release notes must say so,
 and Windows may show SmartScreen. OZ PDF is optional and needs the small

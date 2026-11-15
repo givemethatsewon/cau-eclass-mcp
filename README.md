@@ -18,14 +18,25 @@ e-Class 로그인은 브라우저에서 한 번만 합니다. 강좌, 공지, �
 
 ## Rust MCP 설치
 
-Rust 바이너리 릴리스가 나오면 GitHub Releases에서 사전 빌드 바이너리를 받으면 됩니다. Rust, Python, uv, 가상환경을 설치할 필요가 없습니다.
+[GitHub Releases](https://github.com/givemethatsewon/cau-eclass-mcp/releases/latest)에서 운영체제에 맞는 실행파일을 받습니다. 설치 스크립트가 SHA-256을 검증하며 Rust, Python, uv가 필요 없습니다.
+
+### macOS / Linux
+
+macOS는 Apple Silicon과 Intel, Linux는 glibc 2.35 이상이 설치된 x86_64와 ARM64를 지원합니다.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | sh
-eclass-mcp onboard --client claude
+curl -fsSL https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.sh | bash
 ```
 
-저장소에서 직접 빌드하려면:
+### Windows x64 PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/givemethatsewon/cau-eclass-mcp/main/rust/install.ps1 | iex
+```
+
+설치가 끝나면 출력된 `onboard` 명령을 실행하세요. PATH에 설치 폴더를 추가하면 `eclass-mcp`로 실행할 수 있습니다.
+
+### 소스에서 빌드
 
 ```sh
 cd rust
